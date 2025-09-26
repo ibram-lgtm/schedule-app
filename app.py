@@ -1,25 +1,26 @@
-# app.py — ED Rota (Random + Inline Editing in-table) + Cards + Styled Excel
-# -------------------------------------------------------------------------
-# - Random assignment each run subject to constraints (no ML layer)
-# - Inline edit inside the Generate tab using a Doctor×Day editable grid (st.data_editor)
-# - Cards views: Day×Doctor, Doctor×Day, Day×Shift (empty = no card)
-# - Constraints: coverage, 1 shift/day/doctor, per-group caps, min off, rest≥16h, ≤6 consecutive days, off-days
-# - Export: Rota, Doctor×Day, ByShift, Coverage gaps, Remaining (styled)
+# app.py — ED Rota (Random + Inline Editor + Daily Cards + Strict Rest Rule + Styled Excel)
+# -----------------------------------------------------------------------------------------
+# الميزات:
+# - توليد عشوائي يحترم القيود العامة وقيود المجموعات والراحة (>= min_rest ساعة بين يوم ويوم).
+# - التحرير داخل الجدول (Doctor×Day) عبر st.data_editor مع تحقق قيود/تجاوز.
+# - عروض بطاقات: Day×Doctor, Doctor×Day, Day×Shift.
+# - لوحة بطاقات يومية "Daily Area Cards" تُظهر Assigned/Required لكل كود وتلوين الحالة.
+# - تصدير Excel منسّق: Rota, Doctor×Day, ByShift, Coverage gaps, Remaining, Daily Dashboard.
+# - ثنائي اللغة عربي/إنجليزي.
 #
-# Tips:
-# - Use Inline edit for quick add/remove/edit by clicking cells (codes F1..C3 or empty)
-# - "Validate constraints" checks before applying; "Force override" applies regardless
+# ملاحظة: شرط الراحة مفعل دائمًا، ويُحسب بالساعة (افتراضي 16 ساعة). يمنع تلقائيًا:
+#  - Evening → Morning لليوم التالي (8 ساعات)
+#  - Night → Morning / Evening لليوم التالي (0 أو 8 ساعات)
+# ويُسمح بأمثلة مثل Morning→Morning (16 ساعة)، Morning→Evening (24 ساعة)، Evening→Evening (16 ساعة)، Night→Night (16 ساعة).
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import random
 from io import BytesIO
-from dataclasses import dataclass
 from typing import Dict, List, Tuple
 import calendar, html
 
-# Optional dependency for Excel styling
 try:
     import xlsxwriter
     XLSX_AVAILABLE = True
@@ -48,8 +49,8 @@ I18N = {
         "view_doctor_day": "طبيب × يوم",
         "view_day_shift": "يوم × شفت",
         "cards_view": "عرض الشبكة (بطاقات)",
-        "gaps": "النواقص (Coverage gaps)",
-        "remain": "السعة المتبقية للأطباء",
+        "gaps": "النواقص",
+        "remain": "السعة المتبقية",
         "export": "تصدير",
         "download_xlsx": "تنزيل Excel (منسّق)",
         "doctors_tab": "الأطباء وتفضيلاتهم",
@@ -80,6 +81,11 @@ I18N = {
         "force_override": "تجاوز القيود (لا يُنصح)",
         "invalid_edits": "تغييرات مرفوضة (مخالفة للقيود)",
         "applied_ok": "تم تطبيق التغييرات.",
+        "daily_cards": "لوحة يومية (بطاقات المناطق/العدد)",
+        "assigned": "مسند",
+        "required": "المطلوب",
+        "ok": "مكتمل",
+        "short": "نقص",
     },
     "en": {
         "general": "General",
@@ -100,7 +106,7 @@ I18N = {
         "view_day_shift": "Day × Shift",
         "cards_view": "Cards grid",
         "gaps": "Coverage gaps",
-        "remain": "Doctors with remaining capacity",
+        "remain": "Remaining capacity",
         "export": "Export",
         "download_xlsx": "Download Excel (styled)",
         "doctors_tab": "Doctors & Preferences",
@@ -131,6 +137,11 @@ I18N = {
         "force_override": "Force override (not recommended)",
         "invalid_edits": "Rejected edits (constraint violations)",
         "applied_ok": "Changes applied.",
+        "daily_cards": "Daily area cards (counts per code)",
+        "assigned": "Assigned",
+        "required": "Required",
+        "ok": "OK",
+        "short": "Short",
     }
 }
 def L(k): return I18N[st.session_state.get("lang","en")][k]
@@ -152,6 +163,10 @@ DIGIT_TO_SHIFT = {"1":"morning","2":"evening","3":"night"}
 LETTER_TO_AREA = {"F":"fast","R":"resp_triage","A":"acute","C":"resus"}
 SHIFT_COLS_ORDER = ["F1","F2","F3","R1","R2","R3","A1","A2","A3","C1","C2","C3"]
 def code_for(area,shift): return f"{AREA_CODE[area]}{SHIFT_CODE[shift]}"
+
+# Shift times for rest rule (hours)
+SHIFT_START = {"morning":7, "evening":15, "night":23}
+SHIFT_END   = {"morning":15,"evening":23,"night":7}
 
 # ===== Defaults =====
 DEFAULT_COVERAGE = {
@@ -211,12 +226,11 @@ def _init_session():
     if "offdays" not in ss: ss.offdays = {n:set() for n in ss.doctors}
     if "min_off" not in ss: ss.min_off = 12
     if "max_consec" not in ss: ss.max_consec = 6
-    if "min_rest" not in ss: ss.min_rest = 16
+    if "min_rest" not in ss: ss.min_rest = 16  # مُفعّل دائمًا
     if "result_df" not in ss: ss.result_df = pd.DataFrame()
     if "gaps" not in ss: ss.gaps = pd.DataFrame()
     if "remain" not in ss: ss.remain = pd.DataFrame()
     if "view_mode" not in ss: ss.view_mode = "day_doctor"
-    if "sheet_cache" not in ss: ss.sheet_cache = pd.DataFrame()
 _init_session()
 
 def LBL_AREA(a): return AREA_LABEL[st.session_state.lang][a]
@@ -232,7 +246,8 @@ with st.sidebar:
     st.number_input(L("year"), 2024, 2100, key="year_input", value=st.session_state.year)
     st.number_input(L("month"), 1, 12, key="month_input", value=st.session_state.month)
     st.slider(L("days"), 28, 31, key="days_slider", value=st.session_state.days)
-    seed_val = st.text_input(L("seed"), value="")
+    _ = st.text_input(L("seed"), value="", key="seed_input_txt")
+
     st.session_state.year = st.session_state.year_input
     st.session_state.month = st.session_state.month_input
     st.session_state.days = st.session_state.days_slider
@@ -346,34 +361,65 @@ def weekday_name(y:int, m:int, d:int) -> str:
     wd = calendar.weekday(y, m, d)
     return I18N[st.session_state.lang]["weekday"][wd]
 
+def rest_ok(prev_shift: str, cur_shift: str, min_rest: int) -> bool:
+    """Rest between end(prev of day-1) and start(cur of day) in hours must be >= min_rest."""
+    start_cur = SHIFT_START[cur_shift]
+    end_prev = SHIFT_END[prev_shift]
+    rest = start_cur - end_prev
+    if rest < 0:
+        rest += 24
+    return rest >= int(min_rest)
+
 def constraints_ok(name:str, day:int, area:str, shift:str,
                    assigned_map:Dict[Tuple[str,int],Tuple[str,str]],
                    counts:Dict[str,int]) -> Tuple[bool,str]:
-    if day in st.session_state.offdays.get(name,set()):
+    ss = st.session_state
+    # off-day
+    if day in ss.offdays.get(name,set()):
         return False, "off-day"
-    grp = st.session_state.group_map[name]
+    # group area eligibility
+    grp = ss.group_map[name]
     if area not in GROUP_AREAS[grp]:
         return False, "area not allowed"
-    if shift not in st.session_state.allowed_shifts.get(name,set(SHIFTS)):
+    # shift allowed for this doctor
+    if shift not in ss.allowed_shifts.get(name,set(SHIFTS)):
         return False, "shift not allowed"
+    # one shift per day
     if (name, day) in assigned_map:
         return False, "already assigned"
-    cap = int(st.session_state.cap_map[name])
+    # monthly cap & min off-days
+    cap = int(ss.cap_map[name])
     taken = counts.get(name,0)
     if taken >= cap: return False, "cap reached"
-    if taken >= (st.session_state.days - st.session_state.min_off):
+    if taken >= (ss.days - ss.min_off):
         return False, "min off-days"
-    prev = assigned_map.get((name, day-1))
-    if prev:
-        _, p_shift = prev
-        if (p_shift=="evening" and shift=="morning"): return False, "rest (E→M)"
-        if (p_shift=="night" and shift in ["morning","evening"]): return False, "rest (N→M/E)"
-    # ≤6 consecutive duty days
+
+    # === Strict rest rule: check previous day and next day conflicts ===
+    if ss.min_rest > 0:
+        prev = assigned_map.get((name, day-1))
+        if prev:
+            _, p_shift = prev
+            if not rest_ok(p_shift, shift, ss.min_rest):
+                return False, "rest (prev→today)"
+
+        nxt = assigned_map.get((name, day+1))
+        if nxt:
+            _, n_shift = nxt
+            # ensure rest from 'today' to 'next' also OK
+            start_next = SHIFT_START[n_shift]
+            end_cur = SHIFT_END[shift]
+            rest2 = start_next - end_cur
+            if rest2 < 0:
+                rest2 += 24
+            if rest2 < int(ss.min_rest):
+                return False, "rest (today→next)"
+
+    # ≤ max consecutive duty days
     streak = 0
     t = day-1
     while t>=1 and ((name,t) in assigned_map):
         streak += 1; t -= 1
-    if streak+1 > int(st.session_state.max_consec):
+    if streak+1 > int(ss.max_consec):
         return False, "max consecutive days"
     return True, "ok"
 
@@ -402,7 +448,6 @@ def recompute_tables(df: pd.DataFrame):
     st.session_state.remain = remain
 
 def random_generate():
-    # seed
     try:
         if st.session_state.get("seed_input_txt",""):
             random.seed(int(st.session_state["seed_input_txt"]))
@@ -418,12 +463,12 @@ def random_generate():
         for area in AREAS:
             for shift in SHIFTS:
                 req = int(st.session_state.cov[(area, shift)])
-                for _ in range(req):
-                    slots.append((day, area, shift))
+                slots += [(day, area, shift)]*req
     random.shuffle(slots)
 
     assigned_map: Dict[Tuple[str,int], Tuple[str,str]] = {}
     counts = {n:0 for n in docs}
+
     for (day, area, shift) in slots:
         candidates = []
         for name in docs:
@@ -435,9 +480,9 @@ def random_generate():
             pick = candidates[0]
             assigned_map[(pick, day)] = (area, shift)
             counts[pick] += 1
-    rows = []
-    for (name, day), (area, shift) in assigned_map.items():
-        rows.append({"doctor":name,"day":day,"area":area,"shift":shift,"code":code_for(area,shift)})
+
+    rows = [{"doctor":n,"day":d,"area":a,"shift":s,"code":code_for(a,s)}
+            for (n,d),(a,s) in assigned_map.items()]
     df = pd.DataFrame(rows)
     st.session_state.result_df = df
     recompute_tables(df)
@@ -450,7 +495,6 @@ def sheet_day_doctor(df: pd.DataFrame, days:int, doctors:List[str]) -> pd.DataFr
     return p.reindex(index=range(1, days+1), columns=doctors)
 
 def grid_doctor_day(df: pd.DataFrame, days:int, doctors:List[str]) -> pd.DataFrame:
-    """Editable grid: rows=doctors, cols=days; values are codes or ''."""
     g = pd.DataFrame(index=doctors, columns=[str(d) for d in range(1, days+1)])
     g[:] = ""
     if df.empty: return g
@@ -462,14 +506,31 @@ def day_shift_map(df: pd.DataFrame, days:int) -> Dict[int, Dict[str, List[str]]]
     m = {d:{c:[] for c in SHIFT_COLS_ORDER} for d in range(1, days+1)}
     if df.empty: return m
     for r in df.itertuples(index=False):
-        d = int(r.day)
-        code = str(r.code)
-        if len(code)>=2 and code in m[d]:
+        d = int(r.day); code = str(r.code)
+        if code in m[d]:
             m[d][code].append(r.doctor)
     for d in m:
-        for c in m[d]:
-            m[d][c] = sorted(m[d][c])
+        for c in m[d]: m[d][c] = sorted(m[d][c])
     return m
+
+def daily_counts(df: pd.DataFrame, days:int) -> Dict[int, Dict[str, Tuple[int,int,int]]]:
+    """returns {day: {code: (assigned, required, short_by)}}"""
+    res = {d:{c:(0,0,0) for c in SHIFT_COLS_ORDER} for d in range(1, days+1)}
+    # assigned
+    if not df.empty:
+        ct = df.groupby(["day","code"]).size().to_dict()
+    else:
+        ct = {}
+    # required from coverage
+    req_map = {code_for(a,s): int(st.session_state.cov[(a,s)])
+               for a in AREAS for s in SHIFTS}
+    for d in range(1, days+1):
+        for c in SHIFT_COLS_ORDER:
+            a = ct.get((d,c), 0)
+            r = req_map[c]
+            short = max(0, r - a)
+            res[d][c] = (a, r, short)
+    return res
 
 # ---------- Cards CSS ----------
 AREA_COLORS = {
@@ -501,11 +562,19 @@ def inject_cards_css():
       .mini.a-resp_triage {{ background:{AREA_COLORS["resp_triage"]}; }}
       .mini.a-acute {{ background:{AREA_COLORS["acute"]}; }}
       .mini.a-resus {{ background:{AREA_COLORS["resus"]}; }}
+
+      /* Daily dashboard chips */
+      .status {{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; border:1px solid #e6e8ef; }}
+      .ok    {{ background:#E7F7E9; color:#14532d; }}
+      .short {{ background:#FDEAEA; color:#7f1d1d; }}
+      .box {{ border:1px solid #e6e8ef; border-radius:12px; padding:10px; margin-bottom:10px; }}
+      .box h4 {{ margin:0 0 6px 0; }}
+      .grid {{ display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:8px; }}
     </style>
     """
     st.markdown(css, unsafe_allow_html=True)
 
-# ---------- Renderers (cards; empty = no card) ----------
+# ---------- Renderers ----------
 def render_day_doctor_cards(sheet: pd.DataFrame, year:int, month:int, doctors:List[str]):
     inject_cards_css()
     head = ["<th>"+html.escape(L("day"))+"</th>"] + [f"<th>{html.escape(doc)}</th>" for doc in doctors]
@@ -520,11 +589,9 @@ def render_day_doctor_cards(sheet: pd.DataFrame, year:int, month:int, doctors:Li
             if pd.isna(val) or str(val).strip()=="":
                 cells.append(f"<td><div class='cell'></div></td>")
             else:
-                code = str(val)
-                area = LETTER_TO_AREA.get(code[0], None)
+                code = str(val); area = LETTER_TO_AREA.get(code[0], None)
                 cls = f"a-{area}" if area else ""
-                sh = DIGIT_TO_SHIFT.get(code[-1], None)
-                sub = LBL_SHIFT(sh) if sh else ""
+                sh = DIGIT_TO_SHIFT.get(code[-1], None); sub = LBL_SHIFT(sh) if sh else ""
                 cells.append(f"<td><div class='cell'><div class='card {cls}'>{html.escape(code)}<div class='sub'>{html.escape(sub)}</div></div></div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
@@ -547,11 +614,9 @@ def render_doctor_day_cards(sheet: pd.DataFrame, year:int, month:int, doctors:Li
             if pd.isna(val) or str(val).strip()=="":
                 cells.append(f"<td><div class='cell'></div></td>")
             else:
-                code = str(val)
-                area = LETTER_TO_AREA.get(code[0], None)
+                code = str(val); area = LETTER_TO_AREA.get(code[0], None)
                 cls = f"a-{area}" if area else ""
-                sh = DIGIT_TO_SHIFT.get(code[-1], None)
-                sub = LBL_SHIFT(sh) if sh else ""
+                sh = DIGIT_TO_SHIFT.get(code[-1], None); sub = LBL_SHIFT(sh) if sh else ""
                 cells.append(f"<td><div class='cell'><div class='card {cls}'>{html.escape(code)}<div class='sub'>{html.escape(sub)}</div></div></div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
@@ -585,9 +650,36 @@ def render_day_shift_cards(day_map: Dict[int, Dict[str, List[str]]], year:int, m
     st.subheader(L("by_shift_grid"))
     st.markdown(f"<div class='rota-wrap'><table class='rota'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
 
+def render_daily_area_cards(day_counts: Dict[int, Dict[str, Tuple[int,int,int]]], year:int, month:int):
+    inject_cards_css()
+    st.subheader(L("daily_cards"))
+    for day in range(1, st.session_state.days+1):
+        dname = weekday_name(int(year), int(month), int(day))
+        st.markdown(f"**{day}/{month} — {dname}**")
+        # 4 صناديق للمناطق، داخل كل صندوق 3 أكواد ذلك القسم
+        area_to_codes = {
+            "fast": ["F1","F2","F3"],
+            "resp_triage": ["R1","R2","R3"],
+            "acute": ["A1","A2","A3"],
+            "resus": ["C1","C2","C3"],
+        }
+        cols = st.columns(4)
+        ii = 0
+        for area in ["fast","resp_triage","acute","resus"]:
+            with cols[ii]:
+                st.markdown(f"<div class='box'><h4>{html.escape(AREA_LABEL[st.session_state.lang][area])}</h4>", unsafe_allow_html=True)
+                st.markdown("<div class='grid'>", unsafe_allow_html=True)
+                for code in area_to_codes[area]:
+                    a,r,short = day_counts[day][code]
+                    status_cls = "ok" if short==0 else "short"
+                    label = f"{code}"
+                    badge = f"<span class='status {status_cls}'>{a}/{r}</span>"
+                    st.markdown(f"<div><div class='mini a-{area}'>{label}</div> {badge}</div>", unsafe_allow_html=True)
+                st.markdown("</div></div>", unsafe_allow_html=True)
+            ii += 1
+
 # ---------- Inline editor helpers ----------
 ALL_CODES = [""] + SHIFT_COLS_ORDER  # '' means off/empty
-
 def parse_code(code: str) -> Tuple[str,str]:
     code = (code or "").strip().upper()
     if code == "" or len(code) < 2: return ("","")
@@ -598,15 +690,11 @@ def parse_code(code: str) -> Tuple[str,str]:
     return ("","")
 
 def apply_inline_changes(grid_new: pd.DataFrame, validate: bool, force: bool):
-    """grid_new: rows=doctors, cols=days (str), values are codes or ''."""
     df_old = st.session_state.result_df.copy()
-    # Build a working assignment map and counts from old DF
     assigned_map = {(r.doctor, int(r.day)):(r.area, r.shift) for r in df_old.itertuples(index=False)}
     counts = df_old.groupby("doctor").size().to_dict()
 
-    invalid = []  # list of (doctor, day, code, reason)
-
-    # Iterate all cells; compare old vs new
+    invalid = []
     for doc in st.session_state.doctors:
         for d_str in grid_new.columns:
             day = int(d_str)
@@ -615,37 +703,32 @@ def apply_inline_changes(grid_new: pd.DataFrame, validate: bool, force: bool):
             if (doc, day) in assigned_map:
                 old_code = code_for(*assigned_map[(doc,day)])
             if new_code == old_code:
-                continue  # no change
+                continue
 
-            # remove existing if present
+            # remove existing
             if (doc, day) in assigned_map:
-                # adjust counts and map
                 counts[doc] = max(0, counts.get(doc,0) - 1)
                 assigned_map.pop((doc, day), None)
-                # also drop from df_old
                 df_old = df_old[~((df_old["doctor"]==doc) & (df_old["day"]==day))]
 
-            # if new is blank -> it's a deletion, continue
             if new_code == "" or len(new_code)<2:
-                continue
+                continue  # cleared
 
             area, shift = parse_code(new_code)
             if area=="" or shift=="":
                 invalid.append((doc, day, new_code, "bad code"))
-                continue
-
-            if validate and not force:
-                ok, msg = constraints_ok(doc, day, area, shift, assigned_map, counts)
-                if not ok:
-                    invalid.append((doc, day, new_code, msg))
-                    continue
-
-            # apply
-            assigned_map[(doc, day)] = (area, shift)
-            counts[doc] = counts.get(doc,0) + 1
-            df_old = pd.concat([df_old, pd.DataFrame([{
-                "doctor":doc,"day":day,"area":area,"shift":shift,"code":code_for(area,shift)
-            }])], ignore_index=True)
+            else:
+                if validate and not force:
+                    ok, msg = constraints_ok(doc, day, area, shift, assigned_map, counts)
+                    if not ok:
+                        invalid.append((doc, day, new_code, msg))
+                        continue
+                # apply
+                assigned_map[(doc, day)] = (area, shift)
+                counts[doc] = counts.get(doc,0) + 1
+                df_old = pd.concat([df_old, pd.DataFrame([{
+                    "doctor":doc,"day":day,"area":area,"shift":shift,"code":code_for(area,shift)
+                }])], ignore_index=True)
 
     st.session_state.result_df = df_old
     recompute_tables(df_old)
@@ -653,16 +736,17 @@ def apply_inline_changes(grid_new: pd.DataFrame, validate: bool, force: bool):
 
 # ---------- Generate tab ----------
 with tab_gen:
-    seed_in = st.text_input(L("seed"), value="", key="seed_input_txt")
+    seed_in = st.text_input(L("seed"), value="", key="seed_input_txt_view")
     if st.button(L("run"), key="run_btn", type="primary", use_container_width=True):
         random_generate()
 
     if st.session_state.result_df.empty:
         st.info(L("need_generate"))
     else:
-        # Build the standard tables
+        # Build tables and maps
         sheet = sheet_day_doctor(st.session_state.result_df, st.session_state.days, st.session_state.doctors)
-        dmap = day_shift_map(st.session_state.result_df, st.session_state.days)
+        dmap  = day_shift_map(st.session_state.result_df, st.session_state.days)
+        dcnts = daily_counts(st.session_state.result_df, st.session_state.days)
 
         # View selector
         vlabels = {"day_doctor": L("view_day_doctor"), "doctor_day": L("view_doctor_day"), "day_shift": L("view_day_shift")}
@@ -674,7 +758,6 @@ with tab_gen:
         inv = {v:k for k,v in vlabels.items()}
         st.session_state.view_mode = inv.get(mode, "day_doctor")
 
-        # Cards display
         st.subheader(L("cards_view"))
         if st.session_state.view_mode == "day_doctor":
             render_day_doctor_cards(sheet, int(st.session_state.year), int(st.session_state.month), st.session_state.doctors)
@@ -684,30 +767,19 @@ with tab_gen:
             render_day_shift_cards(dmap, int(st.session_state.year), int(st.session_state.month))
 
         st.divider()
+        render_daily_area_cards(dcnts, int(st.session_state.year), int(st.session_state.month))
 
+        st.divider()
         # Inline editor (Doctor×Day grid)
         st.markdown(f"**{L('inline_edit')}**")
         st.caption(L("inline_hint"))
-
-        # Build editable grid (rows=doctors, cols=days as strings)
         base_grid = grid_doctor_day(st.session_state.result_df, st.session_state.days, st.session_state.doctors)
-        # Column config: selectable codes list for each day column
-        col_cfg = {}
-        for d in range(1, st.session_state.days+1):
-            col_cfg[str(d)] = st.column_config.SelectboxColumn(
-                label=f"{d}/{st.session_state.month}",
-                options=ALL_CODES,
-                required=False
-            )
-
-        edited = st.data_editor(
-            base_grid,
-            column_config=col_cfg,
-            num_rows="fixed",
-            use_container_width=True,
-            key="inline_grid",
-            height=480
-        )
+        col_cfg = {str(d): st.column_config.SelectboxColumn(label=f"{d}/{st.session_state.month}",
+                                                            options=([""]+SHIFT_COLS_ORDER),
+                                                            required=False)
+                   for d in range(1, st.session_state.days+1)}
+        edited = st.data_editor(base_grid, column_config=col_cfg, num_rows="fixed",
+                                use_container_width=True, key="inline_grid", height=480)
 
         c1, c2, c3 = st.columns([1,1,1])
         with c1:
@@ -735,7 +807,7 @@ with tab_gen:
 
 # ---------- Export ----------
 def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
-                 year:int, month:int, dmap: Dict[int, Dict[str, List[str]]]) -> bytes:
+                 year:int, month:int, df_assign: pd.DataFrame) -> bytes:
     if not XLSX_AVAILABLE: return b""
     out = BytesIO()
     wb = xlsxwriter.Workbook(out, {"in_memory": True})
@@ -745,6 +817,8 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
     left_hdr = wb.add_format({"bold":True,"align":"left","valign":"vcenter","bg_color":"#F8F9FE","border":1})
     left_wrap = wb.add_format({"align":"left","valign":"top","border":1,"text_wrap":True})
     blank = wb.add_format({"align":"center","valign":"vcenter","border":1})
+    ok_fmt = wb.add_format({"align":"center","valign":"vcenter","border":1,"bg_color":"#E7F7E9"})
+    short_fmt = wb.add_format({"align":"center","valign":"vcenter","border":1,"bg_color":"#FDEAEA"})
 
     area_fmt = {
         "fast": wb.add_format({"align":"center","valign":"vcenter","border":1,"bg_color":"#E6F3FF"}),
@@ -814,7 +888,7 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
         for j,cname in enumerate(cols2):
             ws3.write(i,j, getattr(row,cname) if hasattr(row,cname) else row[j], cell)
 
-    # Sheet 5 — ByShift
+    # Sheet 5 — ByShift (names)
     ws4 = wb.add_worksheet("ByShift")
     ws4.freeze_panes(1,1)
     ws4.set_column(0, 0, 14)
@@ -822,7 +896,7 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
     ws4.write(0,0, L("day"), hdr)
     for j, code in enumerate(SHIFT_COLS_ORDER, start=1):
         ws4.write(0,j, f"{code}", hdr)
-    dmap = day_shift_map(st.session_state.result_df, st.session_state.days)
+    dmap = day_shift_map(df_assign, st.session_state.days)
     for i, day in enumerate(sorted(dmap.keys()), start=1):
         wd = calendar.weekday(year, month, int(day))
         wd_name = I18N[st.session_state.lang]["weekday"][wd]
@@ -834,6 +908,27 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
             fmt = area_fmt.get(area, left_wrap)
             ws4.write(i,j, "\n".join(names), fmt)
 
+    # Sheet 6 — Daily Dashboard (a/r with coloring)
+    ws5 = wb.add_worksheet("Daily Dashboard")
+    ws5.freeze_panes(1,1)
+    ws5.set_column(0, 0, 16)
+    for c in range(len(SHIFT_COLS_ORDER)): ws5.set_column(c+1, c+1, 12)
+    ws5.write(0,0, L("day"), hdr)
+    for j, code in enumerate(SHIFT_COLS_ORDER, start=1):
+        ws5.write(0,j, code, hdr)
+
+    # build counts
+    dcnts = daily_counts(df_assign, st.session_state.days)
+    for i, day in enumerate(range(1, st.session_state.days+1), start=1):
+        wd = calendar.weekday(year, month, int(day))
+        wd_name = I18N[st.session_state.lang]["weekday"][wd]
+        ws5.write(i,0, f"{int(day)}/{int(month)}\n{wd_name}", day_hdr)
+        ws5.set_row(i, 22)
+        for j, code in enumerate(SHIFT_COLS_ORDER, start=1):
+            a, r, short = dcnts[day][code]
+            fmt = ok_fmt if short==0 else short_fmt
+            ws5.write(i,j, f"{a}/{r}", fmt)
+
     wb.close()
     return out.getvalue()
 
@@ -843,7 +938,7 @@ with tab_export:
     else:
         sheet = sheet_day_doctor(st.session_state.result_df, st.session_state.days, st.session_state.doctors)
         data = export_excel(sheet, st.session_state.gaps, st.session_state.remain,
-                            int(st.session_state.year), int(st.session_state.month), {})
+                            int(st.session_state.year), int(st.session_state.month), st.session_state.result_df)
         st.download_button(L("download_xlsx"), data=data,
                            file_name="ED_rota.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
