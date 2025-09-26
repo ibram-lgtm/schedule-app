@@ -250,5 +250,50 @@ with tab3:
         st.bar_chart(df['القسم'].value_counts())
     else:
         st.info("يجب توليد جدول أولاً لعرض الإحصائيات.")
+        st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap');
+    
+    html, body, [class*="st-"] {
+        font-family: 'Tajawal', sans-serif;
+    }
+    :root {
+        --primary-color: #667eea;
+        --secondary-color: #764ba2;
+        --background-color: #f0f4f8;
+        --text-color: #121212;
+        --card-bg: white;
+        --border-color: #e9ecef;
+        --tab-bg: #f0f4f8;
+        --tab-selected-bg: #667eea;
+        --tab-selected-color: white;
+    }
+    .stApp { background-color: var(--background-color); color: var(--text-color); }
+    h1, h2, h3 { color: var(--primary-color); }
+    .stTabs [data-baseweb="tab"] { color: var(--text-color) !important; background-color: var(--tab-bg); }
+    .stTabs [aria-selected="true"] { background-color: var(--tab-selected-bg); color: var(--tab-selected-color) !important; font-weight: bold; }
+    .day-card {
+        border-radius: 8px;
+        padding: 10px;
+        margin: 4px 0;
+        border: 1px solid var(--border-color);
+        text-align: center;
+        transition: all 0.2s ease-in-out;
+        min-height: 80px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        background-color: var(--card-bg);
+        color: var(--text-color);
+    }
+    .day-card strong { font-size: 1.1em; display: block; }
+    .day-card span { font-size: 0.8em; line-height: 1.2; }
+    .shift-morning { background-color: #E6F3FF; color: #004085; }
+    .shift-evening { background-color: #FFF2E6; color: #856404; }
+    .shift-night   { background-color: #E6E6FA; color: #38006b; }
+    .shift-rest    { background-color: #f8f9fa; color: #6c757d; }
+</style>
+""", unsafe_allow_html=True)
+
 
 
