@@ -5,17 +5,18 @@ from io import BytesIO
 import calendar
 
 # ==================================
-# 1. إعدادات التطبيق وتصميم الواجهة
+# 1. إعدادات التطبيق والواجهة
 # ==================================
-st.set_page_config(layout="wide", page_title="جدول المناوبات الشبكي")
+st.set_page_config(layout="wide", page_title="جدول المناوبات الذكي Pro")
 
-# --- كود التصميم المخصص (CSS) ---
+# --- كود التصميم المخصص (الوضع النهاري فقط) ---
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap');
     
     html, body, [class*="st-"] {
         font-family: 'Tajawal', sans-serif;
+        color: #121212;
     }
 
     :root {
@@ -23,69 +24,71 @@ st.markdown("""
         --background-color: #f0f4f8;
         --card-bg: white;
         --border-color: #e9ecef;
-        --header-bg: #495057;
     }
 
     .stApp { background-color: var(--background-color); }
-    h1, h2, h3 { color: var(--primary-color); text-align: center; }
+    h1, h2, h3, h4, h5 { color: var(--primary-color); }
 
-    /* Grid Card Styling */
-    .grid-card-day {
-        background-color: var(--card-bg);
-        border-radius: 12px;
-        padding: 15px;
-        border: 1px solid var(--border-color);
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        min-height: 250px;
+    /* Horizontal Scroll Container */
+    .daily-view-container {
         display: flex;
-        flex-direction: column;
-    }
-    .grid-card-empty {
-        background-color: #f8f9fa;
-        border-radius: 12px;
-        min-height: 250px;
-        border: 1px dashed #ced4da;
-    }
-    .day-header {
-        font-weight: bold;
-        font-size: 1.5em;
-        color: var(--primary-color);
-        margin-bottom: 10px;
-        border-bottom: 2px solid var(--border-color);
-        padding-bottom: 5px;
-    }
-    .shift-title {
-        font-weight: bold;
-        margin-top: 10px;
-        font-size: 0.9em;
-    }
-    .doctor-name {
-        font-size: 0.85em;
-        padding-right: 10px;
-    }
-    .weekday-header {
-        text-align: center;
-        font-weight: 700;
-        color: var(--header-bg);
-        padding: 10px;
+        overflow-x: auto;
+        padding: 15px;
         background-color: var(--card-bg);
-        border-radius: 8px;
-        margin-bottom: 10px;
+        border-radius: 12px;
+        border: 1px solid var(--border-color);
+        gap: 15px;
+    }
+
+    .day-column {
+        min-width: 280px;
+        flex-shrink: 0;
+        border-right: 1px solid var(--border-color);
+        padding-right: 15px;
+    }
+    
+    .day-column:last-child {
+        border-right: none;
+    }
+
+    .day-column h4 {
+        margin-top: 0;
+        padding-bottom: 10px;
+    }
+    .shift-group h5 {
+        font-weight: bold;
+        margin-top: 15px;
+        margin-bottom: 8px;
+        color: #333;
+        font-size: 1.1em;
+    }
+    .doctor-card {
+        background-color: #f8f9fa;
+        border-radius: 6px;
+        padding: 10px;
+        margin-bottom: 6px;
+        font-size: 0.95em;
+        border-left: 4px solid var(--primary-color);
+        box-shadow: 0 2px 4px rgba(0,0,0,0.04);
     }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🗓️ جدول المناوبات الشبكي")
+st.title("🗓️ جدول المناوبات الذكي Pro")
+st.markdown("### نظام متكامل لعرض وإدارة جداول المناوبات")
 
 # ==================================
-# 2. تهيئة البيانات والخوارزمية (بدون تغيير)
+# 2. تهيئة البيانات وإدارة الحالة
 # ==================================
 if 'doctors' not in st.session_state: st.session_state.doctors = [f"طبيب {i+1}" for i in range(65)]
 if 'constraints' not in st.session_state: st.session_state.constraints = {doc: {"max_shifts": 18} for doc in st.session_state.doctors}
 if 'schedule_df' not in st.session_state: st.session_state.schedule_df = None
 
+# ==================================
+# 3. الخوارزمية (بدون تغيير)
+# ==================================
 @st.cache_data(ttl=600)
-def generate_schedule_grid(num_days, doctors, constraints):
+def generate_schedule_pro(num_days, doctors, constraints):
     SHIFTS = ["☀️ صبح", "🌙 مساء", "🌃 ليل"]
     AREAS_MIN_COVERAGE = {"فرز": 2, "تنفسية": 1, "ملاحظة": 4, "انعاش": 3}
     ALL_AREAS = list(AREAS_MIN_COVERAGE.keys())
@@ -120,71 +123,63 @@ def generate_schedule_grid(num_days, doctors, constraints):
                 for shift in SHIFTS:
                     for area in ALL_AREAS:
                         if solver.Value(shifts_vars[(doc, day, shift, area)]) == 1:
-                            data.append({"الطبيب": doc, "اليوم": day + 1, "المناوبة": shift, "القسم": area})
+                            data.append({"الطبيب": doc, "اليوم": day + 1, "المناوبة": f"{shift}", "القسم": area})
         return pd.DataFrame(data)
     return None
 
 # ==================================
-# 4. دالة عرض البطاقات الشبكية الجديدة
+# 4. دالة العرض اليومي الجديدة
 # ==================================
-def display_grid_card_view(df, year, month):
-    st.header(f"عرض تقويم شهر {calendar.month_name[month]}، {year}")
+def display_daily_view(df, year, month):
+    st.header("📅 العرض اليومي للمناوبات")
     
-    month_calendar = calendar.monthcalendar(year, month)
-    arabic_weekdays = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
-
-    # عرض رؤوس أيام الأسبوع
-    cols = st.columns(7)
-    for i, day_name in enumerate(arabic_weekdays):
-        with cols[i]:
-            st.markdown(f'<div class="weekday-header">{day_name}</div>', unsafe_allow_html=True)
-
-    # عرض بطاقات الأيام
-    for week in month_calendar:
-        cols = st.columns(7)
-        for i, day in enumerate(week):
-            with cols[i]:
-                if day == 0:
-                    st.markdown('<div class="grid-card-empty"></div>', unsafe_allow_html=True)
-                else:
-                    st.markdown(f'<div class="grid-card-day">', unsafe_allow_html=True)
-                    st.markdown(f'<div class="day-header">{day}</div>', unsafe_allow_html=True)
-                    
-                    day_df = df[df['اليوم'] == day] if df is not None else pd.DataFrame()
-                    
-                    if day_df.empty:
-                        st.write("لا توجد مناوبات")
-                    else:
-                        for shift_name in ["☀️ صبح", "🌙 مساء", "🌃 ليل"]:
-                            shift_df = day_df[day_df['المناوبة'] == shift_name]
-                            if not shift_df.empty:
-                                st.markdown(f'<p class="shift-title">{shift_name}</p>', unsafe_allow_html=True)
-                                for _, row in shift_df.iterrows():
-                                    st.markdown(f'<p class="doctor-name">{row["الطبيب"]} <small>({row["القسم"]})</small></p>', unsafe_allow_html=True)
-                    
-                    st.markdown('</div>', unsafe_allow_html=True)
+    html_content = '<div class="daily-view-container">'
     
+    num_days_in_month = calendar.monthrange(year, month)[1]
+    arabic_weekdays = {"Sun": "الأحد", "Mon": "الاثنين", "Tue": "الثلاثاء", "Wed": "الأربعاء", "Thu": "الخميس", "Fri": "الجمعة", "Sat": "السبت"}
+
+    for day in range(1, num_days_in_month + 1):
+        day_df = df[df['اليوم'] == day]
+        weekday_abbr = calendar.day_abbr[calendar.weekday(year, month, day)]
+        weekday_name = arabic_weekdays.get(weekday_abbr, weekday_abbr)
+
+        html_content += f'<div class="day-column"><h4>اليوم {day} <small>({weekday_name})</small></h4>'
+        
+        if day_df.empty:
+            html_content += "<p><i>لا توجد مناوبات</i></p>"
+        else:
+            for shift_name in ["☀️ صبح", "🌙 مساء", "🌃 ليل"]:
+                shift_df = day_df[day_df['المناوبة'] == shift_name]
+                if not shift_df.empty:
+                    html_content += f'<div class="shift-group"><h5>{shift_name}</h5>'
+                    for _, row in shift_df.iterrows():
+                        html_content += f'<div class="doctor-card">{row["الطبيب"]} - {row["القسم"]}</div>'
+                    html_content += '</div>'
+        
+        html_content += '</div>'
+        
+    html_content += '</div>'
+    st.markdown(html_content, unsafe_allow_html=True)
+
 # ==================================
 # 5. بناء الواجهة التفاعلية
 # ==================================
 with st.sidebar:
     st.header("التحكم في الجدول")
-    current_date = pd.to_datetime("today")
-    year_input = st.number_input("السنة", value=current_date.year)
-    month_input = st.number_input("الشهر", value=current_date.month, min_value=1, max_value=12)
+    year_input = st.number_input("السنة", value=2025)
+    month_input = st.number_input("الشهر", value=9, min_value=1, max_value=12)
+    num_days_input = calendar.monthrange(year_input, month_input)[1]
     
     if st.button("🚀 توليد / تحديث الجدول", use_container_width=True):
-        num_days_input = calendar.monthrange(year_input, month_input)[1]
         with st.spinner("🧠 الخوارزمية تعمل..."):
-            schedule = generate_schedule_grid(num_days_input, st.session_state.doctors, st.session_state.constraints)
+            schedule = generate_schedule_pro(num_days_input, st.session_state.doctors, st.session_state.constraints)
             if schedule is not None:
                 st.session_state.schedule_df = schedule
                 st.success("🎉 تم إنشاء الجدول بنجاح!")
             else:
                 st.error("لم يتم العثور على حل.")
 
-# --- عرض الواجهة الرئيسية ---
 if st.session_state.schedule_df is not None:
-    display_grid_card_view(st.session_state.schedule_df, year_input, month_input)
+    display_daily_view(st.session_state.schedule_df, year_input, month_input)
 else:
     st.info("اضغط على 'توليد الجدول' في الشريط الجانبي لبدء العملية.")
