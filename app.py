@@ -7,7 +7,7 @@ import calendar
 # ==================================
 # 1. إعدادات التطبيق والواجهة
 # ==================================
-st.set_page_config(layout="wide", page_title="جدول المناوبات الذكي (Rota View)")
+st.set_page_config(layout="wide", page_title="جدول المناوبات (Daily Rota View)")
 
 # --- كود التصميم المخصص ---
 st.markdown("""
@@ -26,7 +26,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🗓️ جدول المناوبات الذكي (Rota View)")
+st.title("🗓️ جدول المناوبات الذكي (Daily Rota View)")
 st.markdown("### نظام احترافي لعرض وتصدير جداول المناوبات")
 
 # ==================================
@@ -117,7 +117,7 @@ def create_professional_excel(df, year, month):
                         break
                 worksheet.write(row_num, col_num, display_text, cell_format)
         worksheet.freeze_panes(1, 1)
-        
+    
     return output.getvalue()
 
 def display_daily_view(df, year, month):
@@ -127,8 +127,12 @@ def display_daily_view(df, year, month):
     arabic_weekdays = {"Sun": "الأحد", "Mon": "الاثنين", "Tue": "الثلاثاء", "Wed": "الأربعاء", "Thu": "الخميس", "Fri": "الجمعة", "Sat": "السبت"}
     for day in range(1, num_days_in_month + 1):
         day_df = df[df['اليوم'] == day]
-        weekday_abbr = calendar.day_abbr[calendar.weekday(year, month, day)]
-        weekday_name = arabic_weekdays.get(weekday_abbr, weekday_abbr)
+        try:
+            weekday_abbr = calendar.day_abbr[calendar.weekday(year, month, day)]
+            weekday_name = arabic_weekdays.get(weekday_abbr, weekday_abbr)
+        except IndexError:
+            weekday_name = ""
+        
         html_content += f'<div class="day-column"><h4>اليوم {day} <small>({weekday_name})</small></h4>'
         if day_df.empty:
             html_content += "<p><i>لا توجد مناوبات</i></p>"
@@ -179,3 +183,4 @@ if st.session_state.schedule_df is not None:
     display_daily_view(st.session_state.schedule_df, year_input, month_input)
 else:
     st.info("اضغط على 'توليد الجدول' في الشريط الجانبي لبدء العملية.")
+
