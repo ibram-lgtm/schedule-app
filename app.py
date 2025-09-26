@@ -1,10 +1,9 @@
-# app.py — ED Rota (Cards Grid + Styled Excel, Arabic/English)
-# ------------------------------------------------------------
-# - CP-SAT مع سماح بفجوات التغطية (slack) + إبراز الفجوات وقائمة الأطباء ذوي السعة المتبقية
-# - قواعدك: تغطية المناطق، سقف شهري (16 seniors / 18 others)، >=12 إجازة، راحة ≥16 ساعة، ≤6 أيام متتالية
-# - عرض "شبكة بطاقات": الصف = اليوم، العمود = الطبيب، الخلية = بطاقة بالكود F1/A2/… أو فارغة
-# - تصدير Excel مُحسّن: تلوين حسب المنطقة، إبراز الفراغات، أوراق Gaps/Remaining
-# - تبديل اللغة عربي/English بمفاتيح مستقرة لتفادي أخطاء removeChild
+# app.py — ED Rota (Cards Grid Views + By-Shift Grid + Styled Excel, Arabic/English)
+# ----------------------------------------------------------------------------------
+# - 3 views: Day×Doctor (rows=days, cols=doctors), Doctor×Day (rows=doctors, cols=days),
+#            Day×Shift (cols=F1..C3; cells contain doctor name cards)
+# - CP-SAT solver with slacks; highlights gaps & shows remaining capacity
+# - Bilingual UI with stable keys; styled Excel export (Rota, Coverage gaps, Remaining, ByShift)
 
 import streamlit as st
 import pandas as pd
@@ -45,6 +44,10 @@ I18N = {
         "group_caps": "سقوف المجموعات الشهرية",
         "run": "تشغيل المُحلل",
         "generate": "إنشاء الجدول",
+        "view_mode": "طريقة العرض",
+        "view_day_doctor": "يوم × طبيب",
+        "view_doctor_day": "طبيب × يوم",
+        "view_day_shift": "يوم × شفت",
         "cards_view": "عرض الشبكة (بطاقات)",
         "table_view": "عرض الجدول (اختياري)",
         "sheet": "الجدول (صفوف=أيام، أعمدة=أطباء)",
@@ -77,6 +80,7 @@ I18N = {
         "requires_ortools": "هذه الميزة تتطلب OR-Tools على الخادم.",
         "weekday": ["الاثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت","الأحد"],
         "day": "اليوم",
+        "by_shift_grid": "شبكة يوم × شفت (البطاقات = أسماء الأطباء)",
     },
     "en": {
         "general": "General",
@@ -91,6 +95,10 @@ I18N = {
         "group_caps": "Group monthly caps",
         "run": "Run solver",
         "generate": "Generate",
+        "view_mode": "View mode",
+        "view_day_doctor": "Day × Doctor",
+        "view_doctor_day": "Doctor × Day",
+        "view_day_shift": "Day × Shift",
         "cards_view": "Cards grid",
         "table_view": "Table view (optional)",
         "sheet": "Sheet (rows=days, cols=doctors)",
@@ -123,6 +131,7 @@ I18N = {
         "requires_ortools": "This feature requires OR-Tools on the server.",
         "weekday": ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"],
         "day": "Day",
+        "by_shift_grid": "Day × Shift grid (cards = doctor names)",
     }
 }
 def L(k): return I18N[st.session_state.get("lang","en")][k]
@@ -137,6 +146,7 @@ def _init_session():
     if "result_df" not in ss: ss.result_df = pd.DataFrame()
     if "gaps" not in ss: ss.gaps = pd.DataFrame()
     if "remain" not in ss: ss.remain = pd.DataFrame()
+    if "view_mode" not in ss: ss.view_mode = "day_doctor"
 _init_session()
 
 # ===== Static labels =====
@@ -154,6 +164,8 @@ AREA_CODE = {"fast":"F","resp_triage":"R","acute":"A","resus":"C"}
 SHIFT_CODE = {"morning":"1","evening":"2","night":"3"}
 DIGIT_TO_SHIFT = {"1":"morning","2":"evening","3":"night"}
 LETTER_TO_AREA = {"F":"fast","R":"resp_triage","A":"acute","C":"resus"}
+
+SHIFT_COLS_ORDER = ["F1","F2","F3","R1","R2","R3","A1","A2","A3","C1","C2","C3"]
 
 def code_for(area,shift): return f"{AREA_CODE[area]}{SHIFT_CODE[shift]}"
 
@@ -237,8 +249,8 @@ with st.sidebar:
     st.session_state.min_rest = st.session_state.min_rest_input
 
 # ===== Tabs =====
-tab_rules, tab_docs, tab_gen, tab_byshift, tab_export = st.tabs(
-    [L("rules"), L("doctors_tab"), L("generate"), L("by_shift"), L("export")]
+tab_rules, tab_docs, tab_gen, tab_export = st.tabs(
+    [L("rules"), L("doctors_tab"), L("generate"), L("export")]
 )
 
 # ---------- Rules tab ----------
@@ -278,7 +290,6 @@ with tab_docs:
         for n in new_names:
             if n not in st.session_state.doctors:
                 st.session_state.doctors.append(n)
-                # default group g3
                 st.session_state.group_map[n] = "g3"
                 default_cap = int(st.session_state.get("gcap_g3", GROUP_CAP["g3"]))
                 st.session_state.cap_map[n] = default_cap
@@ -397,19 +408,16 @@ def solve() -> SolveResult:
     MOR, EVE, NGT = 0, 1, 2
     for di in range(D):
         for t in range(1, days):
-            # evening(t-1) + morning(t) <= 1
             model.Add(
                 sum(x[(di,t-1,EVE,a)] for a in range(A)) +
                 sum(x[(di,t,MOR,a)] for a in range(A))
                 <= 1
             )
-            # night(t-1) + morning(t) <= 1
             model.Add(
                 sum(x[(di,t-1,NGT,a)] for a in range(A)) +
                 sum(x[(di,t,MOR,a)] for a in range(A))
                 <= 1
             )
-            # night(t-1) + evening(t) <= 1
             model.Add(
                 sum(x[(di,t-1,NGT,a)] for a in range(A)) +
                 sum(x[(di,t,EVE,a)] for a in range(A))
@@ -466,7 +474,6 @@ def solve() -> SolveResult:
                                      "required":req,"assigned":done,"short_by":req-done})
     gaps = pd.DataFrame(gap_rows)
 
-    # remaining capacity
     tot = df.groupby("doctor").size().to_dict()
     rem = [{"doctor":n,"assigned":tot.get(n,0),"cap":int(st.session_state.cap_map[n]),
             "remaining":max(0,int(st.session_state.cap_map[n])-tot.get(n,0))}
@@ -482,19 +489,29 @@ def sheet_from_df(df: pd.DataFrame, days:int, doctors:List[str]) -> pd.DataFrame
     p = df.pivot_table(index="day", columns="doctor", values="code", aggfunc="first")
     return p.reindex(index=range(1, days+1), columns=doctors)
 
-# ---------- Cards grid rendering ----------
+def day_shift_map(df: pd.DataFrame, days:int) -> Dict[int, Dict[str, List[str]]]:
+    """Return {day: {code: [doctors...]}} with codes in SHIFT_COLS_ORDER."""
+    m = {d:{c:[] for c in SHIFT_COLS_ORDER} for d in range(1, days+1)}
+    if df.empty: return m
+    for r in df.itertuples(index=False):
+        d = int(r.day)
+        code = str(r.code)
+        if len(code)>=2 and code in m[d]:
+            m[d][code].append(r.doctor)
+    # sort names for consistency
+    for d in m:
+        for c in m[d]:
+            m[d][c] = sorted(m[d][c])
+    return m
+
+# ---------- Cards CSS ----------
 AREA_COLORS = {
     "fast": "#E6F3FF",
     "resp_triage": "#E8FBF0",
     "acute": "#FFF2E6",
     "resus": "#EEE8FF",
-    "blank": "#FDE2E2",  # highlight empty
+    "blank": "#FDE2E2",
 }
-
-def weekday_name(lang:str, y:int, m:int, d:int) -> str:
-    wd = calendar.weekday(y, m, d)
-    return L("weekday")[wd]
-
 def inject_cards_css():
     css = f"""
     <style>
@@ -502,32 +519,43 @@ def inject_cards_css():
       table.rota {{ border-collapse: separate; border-spacing:0; width: 100%; }}
       table.rota th, table.rota td {{ border:1px solid #e6e8ef; padding:6px 8px; vertical-align:middle; }}
       table.rota thead th {{ position:sticky; top:0; background:#f8f9fe; z-index:2; text-align:center; font-weight:700; }}
-      table.rota tbody th.daycell {{ position:sticky; left:0; background:#fff; z-index:1; white-space:nowrap; font-weight:700; color:#3b57ff; }}
+      table.rota tbody th.sticky {{ position:sticky; left:0; background:#fff; z-index:1; white-space:nowrap; font-weight:700; color:#3b57ff; }}
       .cell {{ display:flex; justify-content:center; align-items:center; min-height:54px; }}
       .card {{ display:flex; flex-direction:column; gap:2px; align-items:center; justify-content:center;
                min-width:72px; padding:6px 10px; border-radius:10px; font-size:13px; font-weight:700;
-               border:1px solid #e6e8ef; box-shadow:0 1px 0 rgba(0,0,0,.05); }}
+               border:1px solid #e6e8ef; box-shadow:0 1px 0 rgba(0,0,0,.05); text-align:center; }}
       .sub {{ font-size:11px; font-weight:500; color:#6b7280; }}
       .blank {{ background:{AREA_COLORS["blank"]}; }}
       .a-fast {{ background:{AREA_COLORS["fast"]}; }}
       .a-resp_triage {{ background:{AREA_COLORS["resp_triage"]}; }}
       .a-acute {{ background:{AREA_COLORS["acute"]}; }}
       .a-resus {{ background:{AREA_COLORS["resus"]}; }}
+
+      /* Mini cards for Day×Shift view (doctor name cards) */
+      .mini-wrap {{ display:flex; flex-wrap: wrap; gap:6px; justify-content:flex-start; }}
+      .mini {{ background:#fff; border:1px solid #e6e8ef; border-radius:10px; padding:4px 8px; font-size:12px; font-weight:600; }}
+      .mini.a-fast {{ background:{AREA_COLORS["fast"]}; }}
+      .mini.a-resp_triage {{ background:{AREA_COLORS["resp_triage"]}; }}
+      .mini.a-acute {{ background:{AREA_COLORS["acute"]}; }}
+      .mini.a-resus {{ background:{AREA_COLORS["resus"]}; }}
     </style>
     """
     st.markdown(css, unsafe_allow_html=True)
 
-def render_cards_grid(sheet: pd.DataFrame, year:int, month:int, doctors:List[str]):
+def weekday_name(lang:str, y:int, m:int, d:int) -> str:
+    wd = calendar.weekday(y, m, d)
+    return L("weekday")[wd]
+
+# ---------- Renderers ----------
+def render_day_doctor_grid(sheet: pd.DataFrame, year:int, month:int, doctors:List[str]):
     inject_cards_css()
-    # Header row: empty corner then doctor names
     head = ["<th>"+html.escape(L("day"))+"</th>"] + [f"<th>{html.escape(doc)}</th>" for doc in doctors]
     thead = "<thead><tr>" + "".join(head) + "</tr></thead>"
 
-    # Body
     body_rows = []
     for day in sheet.index:
         dname = weekday_name(st.session_state.lang, int(year), int(month), int(day))
-        left = f"<th class='daycell'>{int(day)} / {int(month)}<div class='sub'>{html.escape(dname)}</div></th>"
+        left = f"<th class='sticky'>{int(day)} / {int(month)}<div class='sub'>{html.escape(dname)}</div></th>"
         cells = []
         for doc in doctors:
             val = sheet.loc[day, doc]
@@ -535,19 +563,76 @@ def render_cards_grid(sheet: pd.DataFrame, year:int, month:int, doctors:List[str
                 cells.append(f"<td><div class='cell'><div class='card blank'></div></div></td>")
             else:
                 code = str(val)
-                # infer area for color
                 area = LETTER_TO_AREA.get(code[0], None)
                 cls = f"a-{area}" if area else "blank"
-                # infer shift label for subtext
                 sh = DIGIT_TO_SHIFT.get(code[-1], None)
                 sub = SHIFT_LABEL[st.session_state.lang][sh] if sh else ""
                 cells.append(f"<td><div class='cell'><div class='card {cls}'>{html.escape(code)}<div class='sub'>{html.escape(sub)}</div></div></div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
-
     st.markdown(f"<div class='rota-wrap'><table class='rota'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
 
-# ---------- Generate & Cards Grid ----------
+def render_doctor_day_grid(sheet: pd.DataFrame, year:int, month:int, doctors:List[str]):
+    inject_cards_css()
+    days = list(sheet.index)  # 1..N
+    head = ["<th>"+html.escape(L("doctor"))+"</th>"] + [
+        f"<th>{int(d)}/{int(month)}<div class='sub'>{html.escape(weekday_name(st.session_state.lang,int(year),int(month),int(d)))}</div></th>"
+        for d in days
+    ]
+    thead = "<thead><tr>" + "".join(head) + "</tr></thead>"
+
+    body_rows = []
+    for doc in doctors:
+        left = f"<th class='sticky'>{html.escape(doc)}</th>"
+        cells = []
+        for day in days:
+            val = sheet.loc[day, doc]
+            if pd.isna(val) or str(val).strip()=="":
+                cells.append(f"<td><div class='cell'><div class='card blank'></div></div></td>")
+            else:
+                code = str(val)
+                area = LETTER_TO_AREA.get(code[0], None)
+                cls = f"a-{area}" if area else "blank"
+                sh = DIGIT_TO_SHIFT.get(code[-1], None)
+                sub = SHIFT_LABEL[st.session_state.lang][sh] if sh else ""
+                cells.append(f"<td><div class='cell'><div class='card {cls}'>{html.escape(code)}<div class='sub'>{html.escape(sub)}</div></div></div></td>")
+        body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
+    tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
+    st.markdown(f"<div class='rota-wrap'><table class='rota'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
+
+def render_day_shift_grid(day_map: Dict[int, Dict[str, List[str]]], year:int, month:int):
+    inject_cards_css()
+    # Header: Day, then codes in SHIFT_COLS_ORDER
+    head = ["<th>"+html.escape(L("day"))+"</th>"]
+    for code in SHIFT_COLS_ORDER:
+        # show area & shift label as sub
+        area = LETTER_TO_AREA.get(code[0], "")
+        sh = DIGIT_TO_SHIFT.get(code[-1], "")
+        sub = f"{AREA_LABEL[st.session_state.lang][area]} — {SHIFT_LABEL[st.session_state.lang][sh]}"
+        head.append(f"<th>{html.escape(code)}<div class='sub'>{html.escape(sub)}</div></th>")
+    thead = "<thead><tr>" + "".join(head) + "</tr></thead>"
+
+    body_rows = []
+    for day in sorted(day_map.keys()):
+        dname = weekday_name(st.session_state.lang, int(year), int(month), int(day))
+        left = f"<th class='sticky'>{int(day)} / {int(month)}<div class='sub'>{html.escape(dname)}</div></th>"
+        cells = []
+        for code in SHIFT_COLS_ORDER:
+            docs = day_map[day].get(code, [])
+            if not docs:
+                cells.append(f"<td><div class='cell'><div class='card blank'></div></div></td>")
+            else:
+                area = LETTER_TO_AREA.get(code[0], None)
+                cls = f"a-{area}" if area else ""
+                # stack mini cards (names)
+                inner = "".join([f"<div class='mini {cls}'>{html.escape(n)}</div>" for n in docs])
+                cells.append(f"<td><div class='mini-wrap'>{inner}</div></td>")
+        body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
+    tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
+    st.subheader(L("by_shift_grid"))
+    st.markdown(f"<div class='rota-wrap'><table class='rota'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
+
+# ---------- Generate & Views ----------
 with tab_gen:
     if st.button(L("run"), key="run_btn", type="primary", use_container_width=True):
         res = solve()
@@ -559,17 +644,32 @@ with tab_gen:
     if st.session_state.result_df.empty:
         st.info(L("need_generate"))
     else:
+        # Build base matrices once
         sheet = sheet_from_df(st.session_state.result_df, st.session_state.days, st.session_state.doctors)
+        dmap = day_shift_map(st.session_state.result_df, st.session_state.days)
+
+        vlabels = {
+            "day_doctor": L("view_day_doctor"),
+            "doctor_day": L("view_doctor_day"),
+            "day_shift": L("view_day_shift"),
+        }
+        # Choose view
+        mode = st.radio(L("view_mode"),
+                        [vlabels["day_doctor"], vlabels["doctor_day"], vlabels["day_shift"]],
+                        index=["day_doctor","doctor_day","day_shift"].index(st.session_state.view_mode)
+                               if st.session_state.view_mode in ["day_doctor","doctor_day","day_shift"] else 0,
+                        key="view_select", horizontal=True)
+        # Keep internal key
+        inv = {v:k for k,v in vlabels.items()}
+        st.session_state.view_mode = inv.get(mode, "day_doctor")
 
         st.subheader(L("cards_view"))
-        render_cards_grid(sheet, int(st.session_state.year), int(st.session_state.month), st.session_state.doctors)
-
-        # (اختياري) عرض الجدول العادي للمراجعة السريعة
-        with st.expander(L("table_view")):
-            def style_blank(v):
-                return "background-color:#FDE2E2;font-weight:700;" if (pd.isna(v) or str(v).strip()=="") else ""
-            st.dataframe(sheet.style.applymap(style_blank), use_container_width=True,
-                         height=min(620, 34*(st.session_state.days+2)))
+        if st.session_state.view_mode == "day_doctor":
+            render_day_doctor_grid(sheet, int(st.session_state.year), int(st.session_state.month), st.session_state.doctors)
+        elif st.session_state.view_mode == "doctor_day":
+            render_doctor_day_grid(sheet, int(st.session_state.year), int(st.session_state.month), st.session_state.doctors)
+        else:  # day_shift
+            render_day_shift_grid(dmap, int(st.session_state.year), int(st.session_state.month))
 
         st.divider()
         c1, c2 = st.columns(2)
@@ -580,33 +680,16 @@ with tab_gen:
             st.subheader(L("remain"))
             st.dataframe(st.session_state.remain, use_container_width=True, height=320)
 
-# ---------- By shift ----------
-with tab_byshift:
-    day_sel = st.number_input(L("sel_day"), 1, st.session_state.days, 1, key="by_day")
-    area_sel = st.selectbox(L("sel_area"), AREAS, index=0,
-                            format_func=lambda a: AREA_LABEL[st.session_state.lang][a], key="by_area")
-    shift_sel = st.selectbox(L("sel_shift"), SHIFTS, index=0,
-                             format_func=lambda s: SHIFT_LABEL[st.session_state.lang][s], key="by_shift")
-    if st.session_state.result_df.empty:
-        st.info(L("need_generate"))
-    else:
-        mask = (st.session_state.result_df["day"]==int(day_sel)) & \
-               (st.session_state.result_df["area"]==area_sel) & \
-               (st.session_state.result_df["shift"]==shift_sel)
-        names = st.session_state.result_df.loc[mask, "doctor"].tolist()
-        st.write(f"**{AREA_LABEL[st.session_state.lang][area_sel]} — {SHIFT_LABEL[st.session_state.lang][shift_sel]}**")
-        st.write(", ".join(names) if names else "_none_")
-        st.caption(f"({code_for(area_sel, shift_sel)})")
-
-# ---------- Export (Styled Excel with area colors) ----------
+# ---------- Export (Styled Excel + ByShift) ----------
 def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
-                 year:int, month:int) -> bytes:
+                 year:int, month:int, dmap: Dict[int, Dict[str, List[str]]]) -> bytes:
     if not XLSX_AVAILABLE: return b""
     out = BytesIO()
     wb = xlsxwriter.Workbook(out, {"in_memory": True})
     hdr = wb.add_format({"bold":True,"align":"center","valign":"vcenter","bg_color":"#E8EEF9","border":1})
     day_hdr = wb.add_format({"bold":True,"align":"center","valign":"vcenter","bg_color":"#EEF5FF","border":1})
     cell = wb.add_format({"align":"center","valign":"vcenter","border":1})
+    left_wrap = wb.add_format({"align":"left","valign":"top","border":1,"text_wrap":True})
     blank = wb.add_format({"align":"center","valign":"vcenter","border":1,"bg_color":AREA_COLORS["blank"]})
 
     area_fmt = {
@@ -616,20 +699,17 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
         "resus": wb.add_format({"align":"center","valign":"vcenter","border":1,"bg_color":AREA_COLORS["resus"]}),
     }
 
-    # Sheet 1 — Rota (cards-like)
+    # Sheet 1 — Rota (Day×Doctor codes)
     ws = wb.add_worksheet("Rota")
     ws.freeze_panes(1,1)
-    ws.set_column(0, 0, 14)  # Day/weekday
+    ws.set_column(0, 0, 14)
     for c in range(sheet.shape[1]): ws.set_column(c+1, c+1, 18)
 
-    # Header: first cell "Day", others doctors
     ws.write(0,0, L("day"), hdr)
     for j, doc in enumerate(sheet.columns, start=1):
         ws.write(0,j, doc, hdr)
 
-    # Rows
     for i, day in enumerate(sheet.index, start=1):
-        # day header with weekday
         wd = calendar.weekday(year, month, int(day))
         wd_name = L("weekday")[wd]
         ws.write(i,0, f"{int(day)}/{int(month)}\n{wd_name}", day_hdr)
@@ -637,7 +717,7 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
         for j, doc in enumerate(sheet.columns, start=1):
             v = sheet.loc[day, doc]
             if pd.isna(v) or str(v).strip()=="":
-                ws.write(i,j,"", blank)
+                ws.write(i,j,"",blank)
             else:
                 code = str(v)
                 area = LETTER_TO_AREA.get(code[0], None)
@@ -660,6 +740,32 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
         for j,cname in enumerate(cols2):
             ws3.write(i,j, getattr(row,cname) if hasattr(row,cname) else row[j], cell)
 
+    # Sheet 4 — ByShift (Day×Shift; cells list doctor names)
+    ws4 = wb.add_worksheet("ByShift")
+    ws4.freeze_panes(1,1)
+    ws4.set_column(0, 0, 14)
+    for c in range(len(SHIFT_COLS_ORDER)): ws4.set_column(c+1, c+1, 24)
+
+    ws4.write(0,0, L("day"), hdr)
+    for j, code in enumerate(SHIFT_COLS_ORDER, start=1):
+        area = LETTER_TO_AREA.get(code[0], "")
+        sh = DIGIT_TO_SHIFT.get(code[-1], "")
+        ws4.write(0,j, f"{code}", hdr)
+
+    for i, day in enumerate(sorted(dmap.keys()), start=1):
+        wd = calendar.weekday(year, month, int(day))
+        wd_name = L("weekday")[wd]
+        ws4.write(i,0, f"{int(day)}/{int(month)}\n{wd_name}", day_hdr)
+        ws4.set_row(i, 36)
+        for j, code in enumerate(SHIFT_COLS_ORDER, start=1):
+            names = dmap[day].get(code, [])
+            if not names:
+                ws4.write(i,j,"", blank)
+            else:
+                area = LETTER_TO_AREA.get(code[0], None)
+                fmt = area_fmt.get(area, left_wrap)
+                ws4.write(i,j, "\n".join(names), fmt)
+
     wb.close()
     return out.getvalue()
 
@@ -668,8 +774,9 @@ with tab_export:
         st.info(L("need_generate"))
     else:
         sheet = sheet_from_df(st.session_state.result_df, st.session_state.days, st.session_state.doctors)
+        dmap = day_shift_map(st.session_state.result_df, st.session_state.days)
         data = export_excel(sheet, st.session_state.gaps, st.session_state.remain,
-                            int(st.session_state.year), int(st.session_state.month))
+                            int(st.session_state.year), int(st.session_state.month), dmap)
         st.download_button(L("download_xlsx"), data=data,
                            file_name="ED_rota.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
