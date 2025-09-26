@@ -1,21 +1,13 @@
-# app.py — ED Rota (Random + Inline Editor + Daily Cards + Strict Rest Rule + Styled Excel)
-# -----------------------------------------------------------------------------------------
-# الميزات:
-# - توليد عشوائي يحترم القيود العامة وقيود المجموعات والراحة (>= min_rest ساعة بين يوم ويوم).
-# - التحرير داخل الجدول (Doctor×Day) عبر st.data_editor مع تحقق قيود/تجاوز.
-# - عروض بطاقات: Day×Doctor, Doctor×Day, Day×Shift.
-# - لوحة بطاقات يومية "Daily Area Cards" تُظهر Assigned/Required لكل كود وتلوين الحالة.
-# - تصدير Excel منسّق: Rota, Doctor×Day, ByShift, Coverage gaps, Remaining, Daily Dashboard.
-# - ثنائي اللغة عربي/إنجليزي.
-#
-# ملاحظة: شرط الراحة مفعل دائمًا، ويُحسب بالساعة (افتراضي 16 ساعة). يمنع تلقائيًا:
-#  - Evening → Morning لليوم التالي (8 ساعات)
-#  - Night → Morning / Evening لليوم التالي (0 أو 8 ساعات)
-# ويُسمح بأمثلة مثل Morning→Morning (16 ساعة)، Morning→Evening (24 ساعة)، Evening→Evening (16 ساعة)، Night→Night (16 ساعة).
+# app.py — ED Rota (Random + Inline Editor + Daily Area Table + Strict Rest Rule + Styled Excel)
+# ----------------------------------------------------------------------------------------------
+# الجديد:
+# - Daily Area Table: جدول أفقي قابل للسحب (صفوف=مناطق، أعمدة=أيام) يعرض Assigned/Required مع تلوين.
+# - ورقة Excel "Area Totals" بنفس التنسيق (أخضر مكتمل / أحمر نقص).
+# - شرط الراحة (min_rest) مُفعل بصرامة ويُفحص للخلف وللأمام.
+# - باقي الميزات: التوليد العشوائي باحترام القيود، التحرير داخل الجدول، عروض البطاقات، تصدير منسّق.
 
 import streamlit as st
 import pandas as pd
-import numpy as np
 import random
 from io import BytesIO
 from typing import Dict, List, Tuple
@@ -81,7 +73,7 @@ I18N = {
         "force_override": "تجاوز القيود (لا يُنصح)",
         "invalid_edits": "تغييرات مرفوضة (مخالفة للقيود)",
         "applied_ok": "تم تطبيق التغييرات.",
-        "daily_cards": "لوحة يومية (بطاقات المناطق/العدد)",
+        "daily_table": "جدول المناطق اليومي (قابل للسحب)",
         "assigned": "مسند",
         "required": "المطلوب",
         "ok": "مكتمل",
@@ -137,7 +129,7 @@ I18N = {
         "force_override": "Force override (not recommended)",
         "invalid_edits": "Rejected edits (constraint violations)",
         "applied_ok": "Changes applied.",
-        "daily_cards": "Daily area cards (counts per code)",
+        "daily_table": "Daily area table (scrollable)",
         "assigned": "Assigned",
         "required": "Required",
         "ok": "OK",
@@ -362,65 +354,50 @@ def weekday_name(y:int, m:int, d:int) -> str:
     return I18N[st.session_state.lang]["weekday"][wd]
 
 def rest_ok(prev_shift: str, cur_shift: str, min_rest: int) -> bool:
-    """Rest between end(prev of day-1) and start(cur of day) in hours must be >= min_rest."""
-    start_cur = SHIFT_START[cur_shift]
-    end_prev = SHIFT_END[prev_shift]
+    start_cur = {"morning":7,"evening":15,"night":23}[cur_shift]
+    end_prev  = {"morning":15,"evening":23,"night":7}[prev_shift]
     rest = start_cur - end_prev
-    if rest < 0:
-        rest += 24
+    if rest < 0: rest += 24
     return rest >= int(min_rest)
 
 def constraints_ok(name:str, day:int, area:str, shift:str,
                    assigned_map:Dict[Tuple[str,int],Tuple[str,str]],
                    counts:Dict[str,int]) -> Tuple[bool,str]:
     ss = st.session_state
-    # off-day
     if day in ss.offdays.get(name,set()):
         return False, "off-day"
-    # group area eligibility
     grp = ss.group_map[name]
     if area not in GROUP_AREAS[grp]:
         return False, "area not allowed"
-    # shift allowed for this doctor
     if shift not in ss.allowed_shifts.get(name,set(SHIFTS)):
         return False, "shift not allowed"
-    # one shift per day
     if (name, day) in assigned_map:
         return False, "already assigned"
-    # monthly cap & min off-days
-    cap = int(ss.cap_map[name])
-    taken = counts.get(name,0)
+    cap = int(ss.cap_map[name]); taken = counts.get(name,0)
     if taken >= cap: return False, "cap reached"
-    if taken >= (ss.days - ss.min_off):
-        return False, "min off-days"
+    if taken >= (ss.days - ss.min_off): return False, "min off-days"
 
-    # === Strict rest rule: check previous day and next day conflicts ===
+    # strict rest rule: prev and next
     if ss.min_rest > 0:
         prev = assigned_map.get((name, day-1))
         if prev:
             _, p_shift = prev
             if not rest_ok(p_shift, shift, ss.min_rest):
                 return False, "rest (prev→today)"
-
         nxt = assigned_map.get((name, day+1))
         if nxt:
             _, n_shift = nxt
-            # ensure rest from 'today' to 'next' also OK
-            start_next = SHIFT_START[n_shift]
-            end_cur = SHIFT_END[shift]
-            rest2 = start_next - end_cur
-            if rest2 < 0:
-                rest2 += 24
-            if rest2 < int(ss.min_rest):
-                return False, "rest (today→next)"
+            end_cur  = {"morning":15,"evening":23,"night":7}[shift]
+            start_nx = {"morning":7,"evening":15,"night":23}[n_shift]
+            rest2 = start_nx - end_cur
+            if rest2 < 0: rest2 += 24
+            if rest2 < int(ss.min_rest): return False, "rest (today→next)"
 
-    # ≤ max consecutive duty days
-    streak = 0
-    t = day-1
+    # ≤ max consecutive days
+    streak = 0; t = day-1
     while t>=1 and ((name,t) in assigned_map):
         streak += 1; t -= 1
-    if streak+1 > int(ss.max_consec):
-        return False, "max consecutive days"
+    if streak+1 > int(ss.max_consec): return False, "max consecutive days"
     return True, "ok"
 
 def recompute_tables(df: pd.DataFrame):
@@ -514,14 +491,9 @@ def day_shift_map(df: pd.DataFrame, days:int) -> Dict[int, Dict[str, List[str]]]
     return m
 
 def daily_counts(df: pd.DataFrame, days:int) -> Dict[int, Dict[str, Tuple[int,int,int]]]:
-    """returns {day: {code: (assigned, required, short_by)}}"""
+    """{day: {code: (assigned, required, short_by)}}"""
     res = {d:{c:(0,0,0) for c in SHIFT_COLS_ORDER} for d in range(1, days+1)}
-    # assigned
-    if not df.empty:
-        ct = df.groupby(["day","code"]).size().to_dict()
-    else:
-        ct = {}
-    # required from coverage
+    ct = df.groupby(["day","code"]).size().to_dict() if not df.empty else {}
     req_map = {code_for(a,s): int(st.session_state.cov[(a,s)])
                for a in AREAS for s in SHIFTS}
     for d in range(1, days+1):
@@ -532,51 +504,51 @@ def daily_counts(df: pd.DataFrame, days:int) -> Dict[int, Dict[str, Tuple[int,in
             res[d][c] = (a, r, short)
     return res
 
-# ---------- Cards CSS ----------
+def area_totals_from_daily_counts(dc: Dict[int, Dict[str, Tuple[int,int,int]]]) -> Dict[int, Dict[str, Tuple[int,int,int]]]:
+    """Sum per area across its 3 codes for each day."""
+    area_codes = {
+        "fast": ["F1","F2","F3"],
+        "resp_triage": ["R1","R2","R3"],
+        "acute": ["A1","A2","A3"],
+        "resus": ["C1","C2","C3"],
+    }
+    out = {d:{a:(0,0,0) for a in AREAS} for d in dc.keys()}
+    for d in dc.keys():
+        for area, codes in area_codes.items():
+            A = R = 0
+            for c in codes:
+                a, r, _ = dc[d][c]
+                A += a; R += r
+            short = max(0, R - A)
+            out[d][area] = (A, R, short)
+    return out
+
+# ---------- Cards CSS / Tables ----------
 AREA_COLORS = {
     "fast": "#E6F3FF",
     "resp_triage": "#E8FBF0",
     "acute": "#FFF2E6",
     "resus": "#EEE8FF",
 }
-def inject_cards_css():
+def inject_css():
     css = f"""
     <style>
-      .rota-wrap {{ overflow:auto; max-height: 76vh; border:1px solid #e6e8ef; border-radius:14px; background:#fff; }}
-      table.rota {{ border-collapse: separate; border-spacing:0; width: 100%; }}
-      table.rota th, table.rota td {{ border:1px solid #e6e8ef; padding:6px 8px; vertical-align:middle; }}
-      table.rota thead th {{ position:sticky; top:0; background:#f8f9fe; z-index:2; text-align:center; font-weight:700; }}
-      table.rota tbody th.sticky {{ position:sticky; left:0; background:#fff; z-index:1; white-space:nowrap; font-weight:700; color:#3b57ff; }}
-      .cell {{ display:flex; justify-content:center; align-items:center; min-height:54px; }}
-      .card {{ display:flex; flex-direction:column; gap:2px; align-items:center; justify-content:center;
-               min-width:72px; padding:6px 10px; border-radius:10px; font-size:13px; font-weight:700;
-               border:1px solid #e6e8ef; box-shadow:0 1px 0 rgba(0,0,0,.05); text-align:center; }}
-      .sub {{ font-size:11px; font-weight:500; color:#6b7280; }}
-      .a-fast {{ background:{AREA_COLORS["fast"]}; }}
-      .a-resp_triage {{ background:{AREA_COLORS["resp_triage"]}; }}
-      .a-acute {{ background:{AREA_COLORS["acute"]}; }}
-      .a-resus {{ background:{AREA_COLORS["resus"]}; }}
-      .mini-wrap {{ display:flex; flex-wrap: wrap; gap:6px; justify-content:flex-start; }}
-      .mini {{ background:#fff; border:1px solid #e6e8ef; border-radius:10px; padding:4px 8px; font-size:12px; font-weight:600; }}
-      .mini.a-fast {{ background:{AREA_COLORS["fast"]}; }}
-      .mini.a-resp_triage {{ background:{AREA_COLORS["resp_triage"]}; }}
-      .mini.a-acute {{ background:{AREA_COLORS["acute"]}; }}
-      .mini.a-resus {{ background:{AREA_COLORS["resus"]}; }}
-
-      /* Daily dashboard chips */
-      .status {{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; border:1px solid #e6e8ef; }}
+      .wrap {{ overflow:auto; max-height: 76vh; border:1px solid #e6e8ef; border-radius:14px; background:#fff; }}
+      table.tbl {{ border-collapse: separate; border-spacing:0; width: 100%; min-width: 900px; }}
+      table.tbl th, table.tbl td {{ border:1px solid #e6e8ef; padding:6px 8px; vertical-align:middle; }}
+      table.tbl thead th {{ position:sticky; top:0; background:#f8f9fe; z-index:2; text-align:center; font-weight:700; }}
+      table.tbl tbody th.sticky {{ position:sticky; left:0; background:#fff; z-index:1; white-space:nowrap; font-weight:700; }}
+      .cell {{ display:flex; align-items:center; justify-content:center; min-height:40px; }}
+      .badge {{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; border:1px solid #e6e8ef; }}
       .ok    {{ background:#E7F7E9; color:#14532d; }}
       .short {{ background:#FDEAEA; color:#7f1d1d; }}
-      .box {{ border:1px solid #e6e8ef; border-radius:12px; padding:10px; margin-bottom:10px; }}
-      .box h4 {{ margin:0 0 6px 0; }}
-      .grid {{ display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:8px; }}
+      .sub {{ font-size:11px; font-weight:500; color:#6b7280; }}
     </style>
     """
     st.markdown(css, unsafe_allow_html=True)
 
-# ---------- Renderers ----------
 def render_day_doctor_cards(sheet: pd.DataFrame, year:int, month:int, doctors:List[str]):
-    inject_cards_css()
+    inject_css()
     head = ["<th>"+html.escape(L("day"))+"</th>"] + [f"<th>{html.escape(doc)}</th>" for doc in doctors]
     thead = "<thead><tr>" + "".join(head) + "</tr></thead>"
     body_rows = []
@@ -589,16 +561,17 @@ def render_day_doctor_cards(sheet: pd.DataFrame, year:int, month:int, doctors:Li
             if pd.isna(val) or str(val).strip()=="":
                 cells.append(f"<td><div class='cell'></div></td>")
             else:
-                code = str(val); area = LETTER_TO_AREA.get(code[0], None)
-                cls = f"a-{area}" if area else ""
-                sh = DIGIT_TO_SHIFT.get(code[-1], None); sub = LBL_SHIFT(sh) if sh else ""
-                cells.append(f"<td><div class='cell'><div class='card {cls}'>{html.escape(code)}<div class='sub'>{html.escape(sub)}</div></div></div></td>")
+                code = str(val)
+                area = LETTER_TO_AREA.get(code[0], None)
+                sh = DIGIT_TO_SHIFT.get(code[-1], None)
+                sub = LBL_SHIFT(sh) if sh else ""
+                cells.append(f"<td><div class='cell'><span class='badge' style='background:{AREA_COLORS.get(area,'#fff')}'>{html.escape(code)}</span></div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
-    st.markdown(f"<div class='rota-wrap'><table class='rota'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='wrap'><table class='tbl'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
 
 def render_doctor_day_cards(sheet: pd.DataFrame, year:int, month:int, doctors:List[str]):
-    inject_cards_css()
+    inject_css()
     days = list(sheet.index)
     head = ["<th>"+html.escape(L("doctor"))+"</th>"] + [
         f"<th>{int(d)}/{int(month)}<div class='sub'>{html.escape(weekday_name(int(year),int(month),int(d)))}</div></th>"
@@ -614,22 +587,18 @@ def render_doctor_day_cards(sheet: pd.DataFrame, year:int, month:int, doctors:Li
             if pd.isna(val) or str(val).strip()=="":
                 cells.append(f"<td><div class='cell'></div></td>")
             else:
-                code = str(val); area = LETTER_TO_AREA.get(code[0], None)
-                cls = f"a-{area}" if area else ""
-                sh = DIGIT_TO_SHIFT.get(code[-1], None); sub = LBL_SHIFT(sh) if sh else ""
-                cells.append(f"<td><div class='cell'><div class='card {cls}'>{html.escape(code)}<div class='sub'>{html.escape(sub)}</div></div></div></td>")
+                code = str(val)
+                area = LETTER_TO_AREA.get(code[0], None)
+                cells.append(f"<td><div class='cell'><span class='badge' style='background:{AREA_COLORS.get(area,'#fff')}'>{html.escape(code)}</span></div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
-    st.markdown(f"<div class='rota-wrap'><table class='rota'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='wrap'><table class='tbl'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
 
 def render_day_shift_cards(day_map: Dict[int, Dict[str, List[str]]], year:int, month:int):
-    inject_cards_css()
+    inject_css()
     head = ["<th>"+html.escape(L("day"))+"</th>"]
     for code in SHIFT_COLS_ORDER:
-        area = LETTER_TO_AREA.get(code[0], "")
-        sh = DIGIT_TO_SHIFT.get(code[-1], "")
-        sub = f"{AREA_LABEL[st.session_state.lang][area]} — {SHIFT_LABEL[st.session_state.lang][sh]}"
-        head.append(f"<th>{html.escape(code)}<div class='sub'>{html.escape(sub)}</div></th>")
+        head.append(f"<th>{html.escape(code)}</th>")
     thead = "<thead><tr>" + "".join(head) + "</tr></thead>"
     body_rows = []
     for day in sorted(day_map.keys()):
@@ -641,42 +610,36 @@ def render_day_shift_cards(day_map: Dict[int, Dict[str, List[str]]], year:int, m
             if not docs:
                 cells.append(f"<td><div class='cell'></div></td>")
             else:
-                area = LETTER_TO_AREA.get(code[0], None)
-                cls = f"a-{area}" if area else ""
-                inner = "".join([f"<div class='mini {cls}'>{html.escape(n)}</div>" for n in docs])
-                cells.append(f"<td><div class='mini-wrap'>{inner}</div></td>")
+                # show names as small stacked badges
+                inner = "".join([f"<span class='badge' style='margin:2px'>{html.escape(n)}</span>" for n in docs])
+                cells.append(f"<td><div class='cell' style='flex-wrap:wrap; gap:4px'>{inner}</div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
-    st.subheader(L("by_shift_grid"))
-    st.markdown(f"<div class='rota-wrap'><table class='rota'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='wrap'><table class='tbl'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
 
-def render_daily_area_cards(day_counts: Dict[int, Dict[str, Tuple[int,int,int]]], year:int, month:int):
-    inject_cards_css()
-    st.subheader(L("daily_cards"))
-    for day in range(1, st.session_state.days+1):
-        dname = weekday_name(int(year), int(month), int(day))
-        st.markdown(f"**{day}/{month} — {dname}**")
-        # 4 صناديق للمناطق، داخل كل صندوق 3 أكواد ذلك القسم
-        area_to_codes = {
-            "fast": ["F1","F2","F3"],
-            "resp_triage": ["R1","R2","R3"],
-            "acute": ["A1","A2","A3"],
-            "resus": ["C1","C2","C3"],
-        }
-        cols = st.columns(4)
-        ii = 0
-        for area in ["fast","resp_triage","acute","resus"]:
-            with cols[ii]:
-                st.markdown(f"<div class='box'><h4>{html.escape(AREA_LABEL[st.session_state.lang][area])}</h4>", unsafe_allow_html=True)
-                st.markdown("<div class='grid'>", unsafe_allow_html=True)
-                for code in area_to_codes[area]:
-                    a,r,short = day_counts[day][code]
-                    status_cls = "ok" if short==0 else "short"
-                    label = f"{code}"
-                    badge = f"<span class='status {status_cls}'>{a}/{r}</span>"
-                    st.markdown(f"<div><div class='mini a-{area}'>{label}</div> {badge}</div>", unsafe_allow_html=True)
-                st.markdown("</div></div>", unsafe_allow_html=True)
-            ii += 1
+def render_daily_area_table(area_totals: Dict[int, Dict[str, Tuple[int,int,int]]], year:int, month:int):
+    """Scrollable table: rows = areas, columns = days; each cell shows Assigned/Required with color."""
+    inject_css()
+    st.subheader(L("daily_table"))
+    # header
+    head = ["<th>"+html.escape("Area" if st.session_state.lang=="en" else "القسم")+"</th>"]
+    days = list(range(1, st.session_state.days+1))
+    for d in days:
+        dname = weekday_name(int(year), int(month), int(d))
+        head.append(f"<th>{int(d)}/{int(month)}<div class='sub'>{html.escape(dname)}</div></th>")
+    thead = "<thead><tr>" + "".join(head) + "</tr></thead>"
+    # body
+    body_rows = []
+    for area in ["fast","resp_triage","acute","resus"]:
+        left = f"<th class='sticky'>{html.escape(AREA_LABEL[st.session_state.lang][area])}</th>"
+        cells = []
+        for d in days:
+            a, r, short = area_totals[d][area]
+            cls = "ok" if short==0 else "short"
+            cells.append(f"<td><div class='cell'><span class='badge {cls}'>{a}/{r}</span></div></td>")
+        body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
+    tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
+    st.markdown(f"<div class='wrap'><table class='tbl'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
 
 # ---------- Inline editor helpers ----------
 ALL_CODES = [""] + SHIFT_COLS_ORDER  # '' means off/empty
@@ -685,15 +648,13 @@ def parse_code(code: str) -> Tuple[str,str]:
     if code == "" or len(code) < 2: return ("","")
     area = LETTER_TO_AREA.get(code[0], "")
     shift = DIGIT_TO_SHIFT.get(code[-1], "")
-    if area in AREAS and shift in SHIFTS:
-        return area, shift
+    if area in AREAS and shift in SHIFTS: return area, shift
     return ("","")
 
 def apply_inline_changes(grid_new: pd.DataFrame, validate: bool, force: bool):
     df_old = st.session_state.result_df.copy()
     assigned_map = {(r.doctor, int(r.day)):(r.area, r.shift) for r in df_old.itertuples(index=False)}
     counts = df_old.groupby("doctor").size().to_dict()
-
     invalid = []
     for doc in st.session_state.doctors:
         for d_str in grid_new.columns:
@@ -702,18 +663,13 @@ def apply_inline_changes(grid_new: pd.DataFrame, validate: bool, force: bool):
             old_code = ""
             if (doc, day) in assigned_map:
                 old_code = code_for(*assigned_map[(doc,day)])
-            if new_code == old_code:
-                continue
-
+            if new_code == old_code: continue
             # remove existing
             if (doc, day) in assigned_map:
                 counts[doc] = max(0, counts.get(doc,0) - 1)
                 assigned_map.pop((doc, day), None)
                 df_old = df_old[~((df_old["doctor"]==doc) & (df_old["day"]==day))]
-
-            if new_code == "" or len(new_code)<2:
-                continue  # cleared
-
+            if new_code == "" or len(new_code)<2: continue  # cleared
             area, shift = parse_code(new_code)
             if area=="" or shift=="":
                 invalid.append((doc, day, new_code, "bad code"))
@@ -729,24 +685,24 @@ def apply_inline_changes(grid_new: pd.DataFrame, validate: bool, force: bool):
                 df_old = pd.concat([df_old, pd.DataFrame([{
                     "doctor":doc,"day":day,"area":area,"shift":shift,"code":code_for(area,shift)
                 }])], ignore_index=True)
-
     st.session_state.result_df = df_old
     recompute_tables(df_old)
     return invalid
 
 # ---------- Generate tab ----------
 with tab_gen:
-    seed_in = st.text_input(L("seed"), value="", key="seed_input_txt_view")
+    seed_in = st.text_input(L("seed"), value="", key="seed_input_txt")
     if st.button(L("run"), key="run_btn", type="primary", use_container_width=True):
         random_generate()
 
     if st.session_state.result_df.empty:
         st.info(L("need_generate"))
     else:
-        # Build tables and maps
+        # Build views
         sheet = sheet_day_doctor(st.session_state.result_df, st.session_state.days, st.session_state.doctors)
         dmap  = day_shift_map(st.session_state.result_df, st.session_state.days)
         dcnts = daily_counts(st.session_state.result_df, st.session_state.days)
+        atot  = area_totals_from_daily_counts(dcnts)
 
         # View selector
         vlabels = {"day_doctor": L("view_day_doctor"), "doctor_day": L("view_doctor_day"), "day_shift": L("view_day_shift")}
@@ -767,7 +723,8 @@ with tab_gen:
             render_day_shift_cards(dmap, int(st.session_state.year), int(st.session_state.month))
 
         st.divider()
-        render_daily_area_cards(dcnts, int(st.session_state.year), int(st.session_state.month))
+        # New: Daily area table (scrollable)
+        render_daily_area_table(atot, int(st.session_state.year), int(st.session_state.month))
 
         st.divider()
         # Inline editor (Doctor×Day grid)
@@ -780,7 +737,6 @@ with tab_gen:
                    for d in range(1, st.session_state.days+1)}
         edited = st.data_editor(base_grid, column_config=col_cfg, num_rows="fixed",
                                 use_container_width=True, key="inline_grid", height=480)
-
         c1, c2, c3 = st.columns([1,1,1])
         with c1:
             validate = st.checkbox(L("validate_constraints"), value=True, key="inline_validate")
@@ -896,7 +852,17 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
     ws4.write(0,0, L("day"), hdr)
     for j, code in enumerate(SHIFT_COLS_ORDER, start=1):
         ws4.write(0,j, f"{code}", hdr)
-    dmap = day_shift_map(df_assign, st.session_state.days)
+    # build from df_assign
+    def day_shift_map_export(df: pd.DataFrame, days:int):
+        m = {d:{c:[] for c in SHIFT_COLS_ORDER} for d in range(1, days+1)}
+        if df.empty: return m
+        for r in df.itertuples(index=False):
+            d = int(r.day); code = str(r.code)
+            if code in m[d]: m[d][code].append(r.doctor)
+        for d in m: 
+            for c in m[d]: m[d][c] = sorted(m[d][c])
+        return m
+    dmap = day_shift_map_export(df_assign, st.session_state.days)
     for i, day in enumerate(sorted(dmap.keys()), start=1):
         wd = calendar.weekday(year, month, int(day))
         wd_name = I18N[st.session_state.lang]["weekday"][wd]
@@ -908,7 +874,7 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
             fmt = area_fmt.get(area, left_wrap)
             ws4.write(i,j, "\n".join(names), fmt)
 
-    # Sheet 6 — Daily Dashboard (a/r with coloring)
+    # Sheet 6 — Daily Dashboard (per-code counts a/r)
     ws5 = wb.add_worksheet("Daily Dashboard")
     ws5.freeze_panes(1,1)
     ws5.set_column(0, 0, 16)
@@ -916,8 +882,7 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
     ws5.write(0,0, L("day"), hdr)
     for j, code in enumerate(SHIFT_COLS_ORDER, start=1):
         ws5.write(0,j, code, hdr)
-
-    # build counts
+    # counts
     dcnts = daily_counts(df_assign, st.session_state.days)
     for i, day in enumerate(range(1, st.session_state.days+1), start=1):
         wd = calendar.weekday(year, month, int(day))
@@ -928,6 +893,25 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
             a, r, short = dcnts[day][code]
             fmt = ok_fmt if short==0 else short_fmt
             ws5.write(i,j, f"{a}/{r}", fmt)
+
+    # Sheet 7 — Area Totals (new)
+    ws6 = wb.add_worksheet("Area Totals")
+    ws6.freeze_panes(1,1)
+    ws6.set_column(0, 0, 22)
+    for c in range(st.session_state.days): ws6.set_column(c+1, c+1, 12)
+    ws6.write(0,0, "Area" if st.session_state.lang=="en" else "القسم", hdr)
+    for j, d in enumerate(range(1, st.session_state.days+1), start=1):
+        wd = calendar.weekday(year, month, int(d))
+        wd_name = I18N[st.session_state.lang]["weekday"][wd]
+        ws6.write(0,j, f"{int(d)}/{int(month)}\n{wd_name}", hdr)
+    atot = area_totals_from_daily_counts(dcnts)
+    for i, area in enumerate(["fast","resp_triage","acute","resus"], start=1):
+        ws6.write(i,0, AREA_LABEL[st.session_state.lang][area], left_hdr)
+        ws6.set_row(i, 22)
+        for j, d in enumerate(range(1, st.session_state.days+1), start=1):
+            a, r, short = atot[d][area]
+            fmt = ok_fmt if short==0 else short_fmt
+            ws6.write(i,j, f"{a}/{r}", fmt)
 
     wb.close()
     return out.getvalue()
