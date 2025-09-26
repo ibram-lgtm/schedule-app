@@ -1,10 +1,10 @@
-# app.py — ED Rota Sheet (Arabic/English, stable keys, fixed caps widget)
-# -----------------------------------------------------------------------
-# - CP-SAT solver (with slacks) to allow partial solutions + highlight gaps
-# - Rules: coverage, monthly caps, >=12 off days, >=16h rest, <=6 consecutive duty days
-# - Sheet view (rows=days, cols=doctors, values=F1/A2/…); blanks highlighted
-# - Bilingual UI (Arabic/English) with STABLE widget keys to avoid removeChild errors
-# - Excel export (Rota + Coverage gaps + Remaining capacity)
+# app.py — ED Rota (Cards Grid + Styled Excel, Arabic/English)
+# ------------------------------------------------------------
+# - CP-SAT مع سماح بفجوات التغطية (slack) + إبراز الفجوات وقائمة الأطباء ذوي السعة المتبقية
+# - قواعدك: تغطية المناطق، سقف شهري (16 seniors / 18 others)، >=12 إجازة، راحة ≥16 ساعة، ≤6 أيام متتالية
+# - عرض "شبكة بطاقات": الصف = اليوم، العمود = الطبيب، الخلية = بطاقة بالكود F1/A2/… أو فارغة
+# - تصدير Excel مُحسّن: تلوين حسب المنطقة، إبراز الفراغات، أوراق Gaps/Remaining
+# - تبديل اللغة عربي/English بمفاتيح مستقرة لتفادي أخطاء removeChild
 
 import streamlit as st
 import pandas as pd
@@ -12,6 +12,8 @@ import numpy as np
 from io import BytesIO
 from dataclasses import dataclass
 from typing import Dict, List
+import calendar
+import html
 
 # ===== Optional deps =====
 try:
@@ -26,7 +28,7 @@ try:
 except Exception:
     XLSX_AVAILABLE = False
 
-st.set_page_config(page_title="ED Rota — Sheet", layout="wide")
+st.set_page_config(page_title="ED Rota", layout="wide")
 
 # ================= i18n =================
 I18N = {
@@ -43,6 +45,8 @@ I18N = {
         "group_caps": "سقوف المجموعات الشهرية",
         "run": "تشغيل المُحلل",
         "generate": "إنشاء الجدول",
+        "cards_view": "عرض الشبكة (بطاقات)",
+        "table_view": "عرض الجدول (اختياري)",
         "sheet": "الجدول (صفوف=أيام، أعمدة=أطباء)",
         "gaps": "النواقص (Coverage gaps)",
         "remain": "الأطباء ذوو السعة المتبقية",
@@ -71,6 +75,8 @@ I18N = {
         "ok_no_gaps": "تمت التغطية بلا نواقص",
         "need_generate": "اضغط تشغيل المُحلل أولاً.",
         "requires_ortools": "هذه الميزة تتطلب OR-Tools على الخادم.",
+        "weekday": ["الاثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت","الأحد"],
+        "day": "اليوم",
     },
     "en": {
         "general": "General",
@@ -85,6 +91,8 @@ I18N = {
         "group_caps": "Group monthly caps",
         "run": "Run solver",
         "generate": "Generate",
+        "cards_view": "Cards grid",
+        "table_view": "Table view (optional)",
         "sheet": "Sheet (rows=days, cols=doctors)",
         "gaps": "Coverage gaps",
         "remain": "Doctors with remaining capacity",
@@ -113,15 +121,16 @@ I18N = {
         "ok_no_gaps": "Coverage achieved with no gaps",
         "need_generate": "Run the solver first.",
         "requires_ortools": "This feature requires OR-Tools on the server.",
+        "weekday": ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"],
+        "day": "Day",
     }
 }
-def L(k):  # label helper
-    return I18N[st.session_state.get("lang","en")][k]
+def L(k): return I18N[st.session_state.get("lang","en")][k]
 
-# ===== init small session =====
+# ===== init session =====
 def _init_session():
     ss = st.session_state
-    if "lang" not in ss: ss.lang = "en"  # default English
+    if "lang" not in ss: ss.lang = "en"
     if "year" not in ss: ss.year = 2025
     if "month" not in ss: ss.month = 9
     if "days" not in ss: ss.days = 30
@@ -143,6 +152,9 @@ SHIFT_LABEL = {
 }
 AREA_CODE = {"fast":"F","resp_triage":"R","acute":"A","resus":"C"}
 SHIFT_CODE = {"morning":"1","evening":"2","night":"3"}
+DIGIT_TO_SHIFT = {"1":"morning","2":"evening","3":"night"}
+LETTER_TO_AREA = {"F":"fast","R":"resp_triage","A":"acute","C":"resus"}
+
 def code_for(area,shift): return f"{AREA_CODE[area]}{SHIFT_CODE[shift]}"
 
 # ===== Defaults per brief =====
@@ -247,16 +259,14 @@ with tab_rules:
 
     st.subheader(L("group_caps"))
     gc = st.columns(6)
-    # IMPORTANT FIX: do NOT assign to st.session_state[...] in same line as the widget key.
     for i, g in enumerate(["senior","g1","g2","g3","g4","g5"]):
         with gc[i]:
             _ = st.number_input(
-                f"{g}",
-                min_value=0, max_value=31,
+                f"{g}", min_value=0, max_value=31,
                 value=int(st.session_state.get(f"gcap_{g}", GROUP_CAP[g])),
-                key=f"gcap_{g}"  # widget manages st.session_state["gcap_{g}"]
+                key=f"gcap_{g}"
             )
-    st.caption("Tip: per-doctor caps are set in the Doctors tab; group caps here are defaults when adding new doctors.")
+    st.caption("Tip: per-doctor caps are set in Doctors tab; group caps here are defaults for new doctors.")
 
 # ---------- Doctors tab ----------
 with tab_docs:
@@ -365,7 +375,6 @@ def solve() -> SolveResult:
     for name in doctors:
         di = name_to_i[name]
         grp = st.session_state.group_map[name]
-        # allowed areas derive from group
         allowed_areas = GROUP_AREAS[grp]
         allowed_shifts = st.session_state.allowed_shifts[name] if st.session_state.allowed_shifts.get(name) else set(SHIFTS)
 
@@ -467,12 +476,78 @@ def solve() -> SolveResult:
     return SolveResult(df,gaps,remain)
 
 def sheet_from_df(df: pd.DataFrame, days:int, doctors:List[str]) -> pd.DataFrame:
+    """rows=days, cols=doctors, values=code (F1/A2/…), blanks for off."""
     if df.empty:
         return pd.DataFrame(index=range(1, days+1), columns=doctors)
     p = df.pivot_table(index="day", columns="doctor", values="code", aggfunc="first")
     return p.reindex(index=range(1, days+1), columns=doctors)
 
-# ---------- Generate & Sheet ----------
+# ---------- Cards grid rendering ----------
+AREA_COLORS = {
+    "fast": "#E6F3FF",
+    "resp_triage": "#E8FBF0",
+    "acute": "#FFF2E6",
+    "resus": "#EEE8FF",
+    "blank": "#FDE2E2",  # highlight empty
+}
+
+def weekday_name(lang:str, y:int, m:int, d:int) -> str:
+    wd = calendar.weekday(y, m, d)
+    return L("weekday")[wd]
+
+def inject_cards_css():
+    css = f"""
+    <style>
+      .rota-wrap {{ overflow:auto; max-height: 76vh; border:1px solid #e6e8ef; border-radius:14px; background:#fff; }}
+      table.rota {{ border-collapse: separate; border-spacing:0; width: 100%; }}
+      table.rota th, table.rota td {{ border:1px solid #e6e8ef; padding:6px 8px; vertical-align:middle; }}
+      table.rota thead th {{ position:sticky; top:0; background:#f8f9fe; z-index:2; text-align:center; font-weight:700; }}
+      table.rota tbody th.daycell {{ position:sticky; left:0; background:#fff; z-index:1; white-space:nowrap; font-weight:700; color:#3b57ff; }}
+      .cell {{ display:flex; justify-content:center; align-items:center; min-height:54px; }}
+      .card {{ display:flex; flex-direction:column; gap:2px; align-items:center; justify-content:center;
+               min-width:72px; padding:6px 10px; border-radius:10px; font-size:13px; font-weight:700;
+               border:1px solid #e6e8ef; box-shadow:0 1px 0 rgba(0,0,0,.05); }}
+      .sub {{ font-size:11px; font-weight:500; color:#6b7280; }}
+      .blank {{ background:{AREA_COLORS["blank"]}; }}
+      .a-fast {{ background:{AREA_COLORS["fast"]}; }}
+      .a-resp_triage {{ background:{AREA_COLORS["resp_triage"]}; }}
+      .a-acute {{ background:{AREA_COLORS["acute"]}; }}
+      .a-resus {{ background:{AREA_COLORS["resus"]}; }}
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
+
+def render_cards_grid(sheet: pd.DataFrame, year:int, month:int, doctors:List[str]):
+    inject_cards_css()
+    # Header row: empty corner then doctor names
+    head = ["<th>"+html.escape(L("day"))+"</th>"] + [f"<th>{html.escape(doc)}</th>" for doc in doctors]
+    thead = "<thead><tr>" + "".join(head) + "</tr></thead>"
+
+    # Body
+    body_rows = []
+    for day in sheet.index:
+        dname = weekday_name(st.session_state.lang, int(year), int(month), int(day))
+        left = f"<th class='daycell'>{int(day)} / {int(month)}<div class='sub'>{html.escape(dname)}</div></th>"
+        cells = []
+        for doc in doctors:
+            val = sheet.loc[day, doc]
+            if pd.isna(val) or str(val).strip()=="":
+                cells.append(f"<td><div class='cell'><div class='card blank'></div></div></td>")
+            else:
+                code = str(val)
+                # infer area for color
+                area = LETTER_TO_AREA.get(code[0], None)
+                cls = f"a-{area}" if area else "blank"
+                # infer shift label for subtext
+                sh = DIGIT_TO_SHIFT.get(code[-1], None)
+                sub = SHIFT_LABEL[st.session_state.lang][sh] if sh else ""
+                cells.append(f"<td><div class='cell'><div class='card {cls}'>{html.escape(code)}<div class='sub'>{html.escape(sub)}</div></div></div></td>")
+        body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
+    tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
+
+    st.markdown(f"<div class='rota-wrap'><table class='rota'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
+
+# ---------- Generate & Cards Grid ----------
 with tab_gen:
     if st.button(L("run"), key="run_btn", type="primary", use_container_width=True):
         res = solve()
@@ -486,12 +561,15 @@ with tab_gen:
     else:
         sheet = sheet_from_df(st.session_state.result_df, st.session_state.days, st.session_state.doctors)
 
-        # highlight blanks
-        def style_blank(v):
-            return "background-color:#FDE2E2;font-weight:700;" if (pd.isna(v) or str(v).strip()=="") else ""
-        st.subheader(L("sheet"))
-        st.dataframe(sheet.style.applymap(style_blank), use_container_width=True,
-                     height=min(620, 34*(st.session_state.days+2)))
+        st.subheader(L("cards_view"))
+        render_cards_grid(sheet, int(st.session_state.year), int(st.session_state.month), st.session_state.doctors)
+
+        # (اختياري) عرض الجدول العادي للمراجعة السريعة
+        with st.expander(L("table_view")):
+            def style_blank(v):
+                return "background-color:#FDE2E2;font-weight:700;" if (pd.isna(v) or str(v).strip()=="") else ""
+            st.dataframe(sheet.style.applymap(style_blank), use_container_width=True,
+                         height=min(620, 34*(st.session_state.days+2)))
 
         st.divider()
         c1, c2 = st.columns(2)
@@ -520,43 +598,68 @@ with tab_byshift:
         st.write(", ".join(names) if names else "_none_")
         st.caption(f"({code_for(area_sel, shift_sel)})")
 
-# ---------- Export ----------
-def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame) -> bytes:
+# ---------- Export (Styled Excel with area colors) ----------
+def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
+                 year:int, month:int) -> bytes:
     if not XLSX_AVAILABLE: return b""
     out = BytesIO()
     wb = xlsxwriter.Workbook(out, {"in_memory": True})
     hdr = wb.add_format({"bold":True,"align":"center","valign":"vcenter","bg_color":"#E8EEF9","border":1})
+    day_hdr = wb.add_format({"bold":True,"align":"center","valign":"vcenter","bg_color":"#EEF5FF","border":1})
     cell = wb.add_format({"align":"center","valign":"vcenter","border":1})
-    blank = wb.add_format({"align":"center","valign":"vcenter","border":1,"bg_color":"#FDE2E2"})
-    # Rota
+    blank = wb.add_format({"align":"center","valign":"vcenter","border":1,"bg_color":AREA_COLORS["blank"]})
+
+    area_fmt = {
+        "fast": wb.add_format({"align":"center","valign":"vcenter","border":1,"bg_color":AREA_COLORS["fast"]}),
+        "resp_triage": wb.add_format({"align":"center","valign":"vcenter","border":1,"bg_color":AREA_COLORS["resp_triage"]}),
+        "acute": wb.add_format({"align":"center","valign":"vcenter","border":1,"bg_color":AREA_COLORS["acute"]}),
+        "resus": wb.add_format({"align":"center","valign":"vcenter","border":1,"bg_color":AREA_COLORS["resus"]}),
+    }
+
+    # Sheet 1 — Rota (cards-like)
     ws = wb.add_worksheet("Rota")
-    ws.set_column(0, 0, 8)
+    ws.freeze_panes(1,1)
+    ws.set_column(0, 0, 14)  # Day/weekday
     for c in range(sheet.shape[1]): ws.set_column(c+1, c+1, 18)
-    ws.write(0,0,"Day",hdr)
-    for j, doc in enumerate(sheet.columns, start=1): ws.write(0,j,doc,hdr)
+
+    # Header: first cell "Day", others doctors
+    ws.write(0,0, L("day"), hdr)
+    for j, doc in enumerate(sheet.columns, start=1):
+        ws.write(0,j, doc, hdr)
+
+    # Rows
     for i, day in enumerate(sheet.index, start=1):
-        ws.write(i,0,int(day),hdr)
+        # day header with weekday
+        wd = calendar.weekday(year, month, int(day))
+        wd_name = L("weekday")[wd]
+        ws.write(i,0, f"{int(day)}/{int(month)}\n{wd_name}", day_hdr)
+        ws.set_row(i, 32)
         for j, doc in enumerate(sheet.columns, start=1):
             v = sheet.loc[day, doc]
             if pd.isna(v) or str(v).strip()=="":
-                ws.write(i,j,"",blank)
+                ws.write(i,j,"", blank)
             else:
-                ws.write(i,j,str(v),cell)
-    ws.freeze_panes(1,1)
-    # Gaps
+                code = str(v)
+                area = LETTER_TO_AREA.get(code[0], None)
+                fmt = area_fmt.get(area, cell)
+                ws.write(i,j, code, fmt)
+
+    # Sheet 2 — Coverage gaps
     ws2 = wb.add_worksheet("Coverage gaps")
     cols = ["day","shift","area","abbr","required","assigned","short_by"]
     for j,cname in enumerate(cols): ws2.write(0,j,cname,hdr)
     for i,row in enumerate(gaps.itertuples(index=False), start=1):
         for j,cname in enumerate(cols):
             ws2.write(i,j, getattr(row,cname) if hasattr(row,cname) else row[j], cell)
-    # Remaining
+
+    # Sheet 3 — Remaining capacity
     ws3 = wb.add_worksheet("Remaining capacity")
     cols2 = ["doctor","assigned","cap","remaining"]
     for j,cname in enumerate(cols2): ws3.write(0,j,cname,hdr)
     for i,row in enumerate(remain.itertuples(index=False), start=1):
         for j,cname in enumerate(cols2):
             ws3.write(i,j, getattr(row,cname) if hasattr(row,cname) else row[j], cell)
+
     wb.close()
     return out.getvalue()
 
@@ -565,7 +668,8 @@ with tab_export:
         st.info(L("need_generate"))
     else:
         sheet = sheet_from_df(st.session_state.result_df, st.session_state.days, st.session_state.doctors)
-        data = export_excel(sheet, st.session_state.gaps, st.session_state.remain)
+        data = export_excel(sheet, st.session_state.gaps, st.session_state.remain,
+                            int(st.session_state.year), int(st.session_state.month))
         st.download_button(L("download_xlsx"), data=data,
                            file_name="ED_rota.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
