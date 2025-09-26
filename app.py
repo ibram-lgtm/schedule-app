@@ -1,10 +1,10 @@
 # app.py — ED Rota (Random + Inline Editor + Daily Area Table + Strict Rest Rule + Styled Excel)
 # ----------------------------------------------------------------------------------------------
-# الجديد:
+# - إصلاح: إزالة تكرار key لحقل البذرة (seed). الحقل موجود فقط في الشريط الجانبي.
 # - Daily Area Table: جدول أفقي قابل للسحب (صفوف=مناطق، أعمدة=أيام) يعرض Assigned/Required مع تلوين.
-# - ورقة Excel "Area Totals" بنفس التنسيق (أخضر مكتمل / أحمر نقص).
+# - Excel: أوراق منسّقة (Rota, Doctor×Day, ByShift, Coverage gaps, Remaining, Daily Dashboard, Area Totals).
 # - شرط الراحة (min_rest) مُفعل بصرامة ويُفحص للخلف وللأمام.
-# - باقي الميزات: التوليد العشوائي باحترام القيود، التحرير داخل الجدول، عروض البطاقات، تصدير منسّق.
+# - توليد عشوائي يحترم القيود + تحرير داخل الجدول.
 
 import streamlit as st
 import pandas as pd
@@ -218,7 +218,7 @@ def _init_session():
     if "offdays" not in ss: ss.offdays = {n:set() for n in ss.doctors}
     if "min_off" not in ss: ss.min_off = 12
     if "max_consec" not in ss: ss.max_consec = 6
-    if "min_rest" not in ss: ss.min_rest = 16  # مُفعّل دائمًا
+    if "min_rest" not in ss: ss.min_rest = 16
     if "result_df" not in ss: ss.result_df = pd.DataFrame()
     if "gaps" not in ss: ss.gaps = pd.DataFrame()
     if "remain" not in ss: ss.remain = pd.DataFrame()
@@ -238,7 +238,8 @@ with st.sidebar:
     st.number_input(L("year"), 2024, 2100, key="year_input", value=st.session_state.year)
     st.number_input(L("month"), 1, 12, key="month_input", value=st.session_state.month)
     st.slider(L("days"), 28, 31, key="days_slider", value=st.session_state.days)
-    _ = st.text_input(L("seed"), value="", key="seed_input_txt")
+    # NOTE: seed input only here (unique key)
+    _ = st.text_input(L("seed"), value=st.session_state.get("seed_input_txt",""), key="seed_input_txt")
 
     st.session_state.year = st.session_state.year_input
     st.session_state.month = st.session_state.month_input
@@ -523,7 +524,7 @@ def area_totals_from_daily_counts(dc: Dict[int, Dict[str, Tuple[int,int,int]]]) 
             out[d][area] = (A, R, short)
     return out
 
-# ---------- Cards CSS / Tables ----------
+# ---------- CSS / Tables ----------
 AREA_COLORS = {
     "fast": "#E6F3FF",
     "resp_triage": "#E8FBF0",
@@ -563,8 +564,6 @@ def render_day_doctor_cards(sheet: pd.DataFrame, year:int, month:int, doctors:Li
             else:
                 code = str(val)
                 area = LETTER_TO_AREA.get(code[0], None)
-                sh = DIGIT_TO_SHIFT.get(code[-1], None)
-                sub = LBL_SHIFT(sh) if sh else ""
                 cells.append(f"<td><div class='cell'><span class='badge' style='background:{AREA_COLORS.get(area,'#fff')}'>{html.escape(code)}</span></div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
@@ -610,7 +609,6 @@ def render_day_shift_cards(day_map: Dict[int, Dict[str, List[str]]], year:int, m
             if not docs:
                 cells.append(f"<td><div class='cell'></div></td>")
             else:
-                # show names as small stacked badges
                 inner = "".join([f"<span class='badge' style='margin:2px'>{html.escape(n)}</span>" for n in docs])
                 cells.append(f"<td><div class='cell' style='flex-wrap:wrap; gap:4px'>{inner}</div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
@@ -618,17 +616,14 @@ def render_day_shift_cards(day_map: Dict[int, Dict[str, List[str]]], year:int, m
     st.markdown(f"<div class='wrap'><table class='tbl'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
 
 def render_daily_area_table(area_totals: Dict[int, Dict[str, Tuple[int,int,int]]], year:int, month:int):
-    """Scrollable table: rows = areas, columns = days; each cell shows Assigned/Required with color."""
     inject_css()
     st.subheader(L("daily_table"))
-    # header
     head = ["<th>"+html.escape("Area" if st.session_state.lang=="en" else "القسم")+"</th>"]
     days = list(range(1, st.session_state.days+1))
     for d in days:
         dname = weekday_name(int(year), int(month), int(d))
         head.append(f"<th>{int(d)}/{int(month)}<div class='sub'>{html.escape(dname)}</div></th>")
     thead = "<thead><tr>" + "".join(head) + "</tr></thead>"
-    # body
     body_rows = []
     for area in ["fast","resp_triage","acute","resus"]:
         left = f"<th class='sticky'>{html.escape(AREA_LABEL[st.session_state.lang][area])}</th>"
@@ -691,7 +686,7 @@ def apply_inline_changes(grid_new: pd.DataFrame, validate: bool, force: bool):
 
 # ---------- Generate tab ----------
 with tab_gen:
-    seed_in = st.text_input(L("seed"), value="", key="seed_input_txt")
+    # لا يوجد text_input آخر للبذرة هنا لتجنب تكرار key
     if st.button(L("run"), key="run_btn", type="primary", use_container_width=True):
         random_generate()
 
@@ -723,7 +718,7 @@ with tab_gen:
             render_day_shift_cards(dmap, int(st.session_state.year), int(st.session_state.month))
 
         st.divider()
-        # New: Daily area table (scrollable)
+        # Daily area table (scrollable)
         render_daily_area_table(atot, int(st.session_state.year), int(st.session_state.month))
 
         st.divider()
@@ -852,7 +847,6 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
     ws4.write(0,0, L("day"), hdr)
     for j, code in enumerate(SHIFT_COLS_ORDER, start=1):
         ws4.write(0,j, f"{code}", hdr)
-    # build from df_assign
     def day_shift_map_export(df: pd.DataFrame, days:int):
         m = {d:{c:[] for c in SHIFT_COLS_ORDER} for d in range(1, days+1)}
         if df.empty: return m
@@ -882,7 +876,6 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
     ws5.write(0,0, L("day"), hdr)
     for j, code in enumerate(SHIFT_COLS_ORDER, start=1):
         ws5.write(0,j, code, hdr)
-    # counts
     dcnts = daily_counts(df_assign, st.session_state.days)
     for i, day in enumerate(range(1, st.session_state.days+1), start=1):
         wd = calendar.weekday(year, month, int(day))
@@ -894,7 +887,7 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
             fmt = ok_fmt if short==0 else short_fmt
             ws5.write(i,j, f"{a}/{r}", fmt)
 
-    # Sheet 7 — Area Totals (new)
+    # Sheet 7 — Area Totals (sum by area per day)
     ws6 = wb.add_worksheet("Area Totals")
     ws6.freeze_panes(1,1)
     ws6.set_column(0, 0, 22)
