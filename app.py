@@ -5,85 +5,69 @@ from io import BytesIO
 import calendar
 
 # ==================================
-# 1. إعدادات التطبيق والواجهة الاحترافية
+# 1. إعدادات التطبيق والواجهة
 # ==================================
 st.set_page_config(layout="wide", page_title="جدول المناوبات الذكي Pro")
 
-# --- متغير CSS لحل مشكلة السلسلة النصية ---
-CSS = """
+# --- كود التصميم المخصص (الوضع النهاري فقط) ---
+st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap');
     
     html, body, [class*="st-"] {
         font-family: 'Tajawal', sans-serif;
+        color: #121212; /* لون الخط الأساسي غامق */
     }
 
-    /* === Global Color Variables === */
     :root {
         --primary-color: #667eea;
-        --secondary-color: #764ba2;
         --background-color: #f0f4f8;
-        --text-color: #262730;
         --card-bg: white;
         --border-color: #e9ecef;
-        --tab-bg: #f0f4f8;
         --tab-selected-bg: #667eea;
         --tab-selected-color: white;
     }
 
-    /* === Dark Mode Overrides === */
-    body[data-theme="dark"] {
-        --primary-color: #8A98F7;
-        --secondary-color: #9B70E0;
-        --background-color: #0e1117;
-        --text-color: #fafafa;
-        --card-bg: #1c1e24;
-        --border-color: #31333F;
-        --tab-bg: #262730;
-        --tab-selected-bg: #8A98F7;
-        --tab-selected-color: #0e1117;
+    .stApp { 
+        background-color: var(--background-color);
     }
-    
-    .stApp { background-color: var(--background-color); }
-    h1, h2, h3 { color: var(--primary-color); }
-    
-    /* Tabs styling */
-    .stTabs [data-baseweb="tab"] { color: var(--text-color) !important; background-color: var(--tab-bg); }
-    .stTabs [aria-selected="true"] { background-color: var(--tab-selected-bg); color: var(--tab-selected-color) !important; font-weight: bold; }
-    
-    /* Card View Styles */
+
+    h1, h2, h3 { 
+        color: var(--primary-color); 
+    }
+
+    .stTabs [aria-selected="true"] { 
+        background-color: var(--tab-selected-bg); 
+        color: var(--tab-selected-color) !important; 
+        font-weight: bold; 
+    }
+
     .day-card {
         border-radius: 8px;
         padding: 10px;
         margin: 4px 0;
         border: 1px solid var(--border-color);
         text-align: center;
-        transition: all 0.2s ease-in-out;
         min-height: 80px;
         display: flex;
         flex-direction: column;
         justify-content: center;
     }
+
     .day-card strong { font-size: 1.1em; display: block; }
     .day-card span { font-size: 0.8em; line-height: 1.2; }
-    .st-emotion-cache-1r4qj8v { background-color: var(--card-bg); border-radius: 10px; }
 
-    /* Shift-specific colors */
+    /* ألوان المناوبات بخط غامق وواضح */
     .shift-morning { background-color: #E6F3FF; color: #004085; }
     .shift-evening { background-color: #FFF2E6; color: #856404; }
     .shift-night   { background-color: #E6E6FA; color: #38006b; }
     .shift-rest    { background-color: #f8f9fa; color: #6c757d; }
 
-    body[data-theme="dark"] .shift-morning { background-color: #1A2C42; color: #A8D8FF; }
-    body[data-theme="dark"] .shift-evening { background-color: #423424; color: #FFDDB3; }
-    body[data-theme="dark"] .shift-night   { background-color: #312B47; color: #D1C4E9; }
-    body[data-theme="dark"] .shift-rest    { background-color: #31333F; color: #A6A9B0; }
 </style>
-"""
-st.markdown(CSS, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 st.title("🗓️ جدول المناوبات الذكي Pro")
-st.markdown("### نظام متكامل مع عرض البطاقات الاحترافي والمتوافق")
+st.markdown("### نظام متكامل لعرض وإدارة جداول المناوبات")
 
 # ==================================
 # 2. تهيئة البيانات وإدارة الحالة
@@ -141,7 +125,7 @@ def generate_schedule_pro(num_days, doctors, constraints):
     return None
 
 # ==================================
-# 4. دوال مساعدة جديدة (عرض البطاقات)
+# 4. دوال مساعدة
 # ==================================
 def create_roster_view(df, num_days, doctors):
     if df is None or df.empty:
@@ -154,8 +138,7 @@ def get_shift_class(shift_val):
     if "☀️" in shift_val: return "shift-morning"
     if "🌙" in shift_val: return "shift-evening"
     if "🌃" in shift_val: return "shift-night"
-    if "راحة" in shift_val: return "shift-rest"
-    return ""
+    return "shift-rest"
 
 def display_cards_view(roster_df, year, month):
     arabic_weekdays = {"Sun": "الأحد", "Mon": "الاثنين", "Tue": "الثلاثاء", "Wed": "الأربعاء", "Thu": "الخميس", "Fri": "الجمعة", "Sat": "السبت"}
@@ -168,9 +151,8 @@ def display_cards_view(roster_df, year, month):
                 try:
                     weekday_abbr = calendar.day_abbr[calendar.weekday(year, month, day)]
                     weekday_name = arabic_weekdays.get(weekday_abbr, weekday_abbr)
-                except ValueError:
-                    weekday_name = " "
-                
+                except (ValueError, TypeError):
+                    weekday_name = ""
                 with cols[(day - 1) % 7]:
                     st.markdown(f"""
                     <div class="day-card {shift_class}">
@@ -180,21 +162,20 @@ def display_cards_view(roster_df, year, month):
                     """, unsafe_allow_html=True)
 
 # ==================================
-# 5. بناء الواجهة التفاعلية المحسّنة
+# 5. بناء الواجهة التفاعلية
 # ==================================
-tab1, tab2, tab3 = st.tabs(["📊 عرض الجدول (بطاقات)", "👨‍⚕️ إدارة الأطباء", "📈 إحصائيات"])
+tab1, tab2, tab3 = st.tabs(["📊 عرض الجدول", "👨‍⚕️ إدارة الأطباء", "📈 إحصائيات"])
 
 with tab1:
     st.header("التحكم وعرض الجدول")
     with st.container(border=True):
-        col1, col2 = st.columns([1, 1])
+        col1, col2 = st.columns(2)
         with col1:
             num_days_input = st.slider("🗓️ عدد أيام الشهر", 28, 31, 30, key="num_days")
             year_input = st.number_input("السنة", value=2025)
             month_input = st.number_input("الشهر", value=9, min_value=1, max_value=12)
         with col2:
-            st.write("") # Spacer
-            st.write("") # Spacer
+            st.write("")
             if st.button("🚀 توليد / تحديث الجدول", use_container_width=True):
                 with st.spinner("🧠 الخوارزمية تعمل بجد..."):
                     schedule = generate_schedule_pro(num_days_input, st.session_state.doctors, st.session_state.constraints)
@@ -202,18 +183,15 @@ with tab1:
                     roster = create_roster_view(schedule, num_days_input, st.session_state.doctors)
                     st.session_state.roster_view = roster
                     st.success("🎉 تم إنشاء الجدول بنجاح!")
-            
-            if st.session_state.roster_view is not None:
+            if 'roster_view' in st.session_state and st.session_state.roster_view is not None:
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     st.session_state.roster_view.to_excel(writer, sheet_name='جدول المناوبات')
-                st.download_button(
-                    label="📥 تصدير إلى Excel", data=output.getvalue(),
-                    file_name="جدول_المناوبات.xlsx", mime="application/vnd.ms-excel",
-                    use_container_width=True
-                )
+                st.download_button("📥 تصدير إلى Excel", output.getvalue(), "جدول_المناوبات.xlsx", "application/vnd.ms-excel", use_container_width=True)
+    
     st.divider()
-    if st.session_state.roster_view is not None:
+
+    if 'roster_view' in st.session_state and st.session_state.roster_view is not None:
         st.subheader("📅 عرض الجدول بنظام البطاقات")
         display_cards_view(st.session_state.roster_view, year_input, month_input)
     else:
@@ -232,16 +210,12 @@ with tab2:
     st.subheader("📋 تعديل قيود الأطباء")
     for doc in st.session_state.doctors:
         with st.container(border=True):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**{doc}**")
-            with col2:
-                max_shifts = st.number_input(f"أقصى عدد شفتات لـ", 1, 30, st.session_state.constraints.get(doc, {}).get('max_shifts', 18), key=f"max_{doc}")
-                st.session_state.constraints[doc]['max_shifts'] = max_shifts
+            max_shifts = st.slider(f"أقصى عدد شفتات لـ **{doc}**", 1, 30, st.session_state.constraints.get(doc, {}).get('max_shifts', 18), key=f"max_{doc}")
+            st.session_state.constraints[doc]['max_shifts'] = max_shifts
 
 with tab3:
     st.header("تحليلات وإحصائيات")
-    if st.session_state.schedule_df is not None and not st.session_state.schedule_df.empty:
+    if 'schedule_df' in st.session_state and st.session_state.schedule_df is not None:
         df = st.session_state.schedule_df
         st.subheader("📊 عدد الشفتات لكل طبيب")
         st.bar_chart(df['الطبيب'].value_counts())
@@ -250,50 +224,8 @@ with tab3:
         st.bar_chart(df['القسم'].value_counts())
     else:
         st.info("يجب توليد جدول أولاً لعرض الإحصائيات.")
-        st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap');
-    
-    html, body, [class*="st-"] {
-        font-family: 'Tajawal', sans-serif;
-    }
-    :root {
-        --primary-color: #667eea;
-        --secondary-color: #764ba2;
-        --background-color: #f0f4f8;
-        --text-color: #121212;
-        --card-bg: white;
-        --border-color: #e9ecef;
-        --tab-bg: #f0f4f8;
-        --tab-selected-bg: #667eea;
-        --tab-selected-color: white;
-    }
-    .stApp { background-color: var(--background-color); color: var(--text-color); }
-    h1, h2, h3 { color: var(--primary-color); }
-    .stTabs [data-baseweb="tab"] { color: var(--text-color) !important; background-color: var(--tab-bg); }
-    .stTabs [aria-selected="true"] { background-color: var(--tab-selected-bg); color: var(--tab-selected-color) !important; font-weight: bold; }
-    .day-card {
-        border-radius: 8px;
-        padding: 10px;
-        margin: 4px 0;
-        border: 1px solid var(--border-color);
-        text-align: center;
-        transition: all 0.2s ease-in-out;
-        min-height: 80px;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        background-color: var(--card-bg);
-        color: var(--text-color);
-    }
-    .day-card strong { font-size: 1.1em; display: block; }
-    .day-card span { font-size: 0.8em; line-height: 1.2; }
-    .shift-morning { background-color: #E6F3FF; color: #004085; }
-    .shift-evening { background-color: #FFF2E6; color: #856404; }
-    .shift-night   { background-color: #E6E6FA; color: #38006b; }
-    .shift-rest    { background-color: #f8f9fa; color: #6c757d; }
-</style>
-""", unsafe_allow_html=True)
+
+
 
 
 
