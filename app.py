@@ -27,7 +27,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🗓️ جدول المناوبات الذكي Pro")
-st.markdown("### نظام متكامل لعرض وإدارة وتصدير جداول المناوبات")
+st.markdown("### نظام متكامل مع تصدير Excel احترافي")
 
 # ==================================
 # 2. تهيئة البيانات
@@ -73,40 +73,113 @@ def generate_schedule_pro(num_days, doctors, constraints):
     return None
 
 # ==================================
-# 4. دوال العرض والتصدير
+# 4. دالة إنشاء Excel الاحترافي (حسب الصورة المرفقة)
 # ==================================
-def create_styled_excel(df, roster_df, year, month):
+def create_professional_excel(df, year, month):
+    """
+    إنشاء ملف Excel احترافي مطابق للصورة:
+    - كل طبيب = صف واحد
+    - كل يوم = عمود واحد  
+    - ألوان مميزة للمناوبات
+    """
     output = BytesIO()
+    num_days = calendar.monthrange(year, month)[1]
+    
+    # الحصول على قائمة الأطباء المرتبة
+    doctors = df['الطبيب'].unique().tolist()
+    doctors.sort()
+    
+    # إنشاء جدول فارغ بالتصميم المطلوب
+    schedule_grid = pd.DataFrame(index=doctors, columns=range(1, num_days + 1))
+    schedule_grid = schedule_grid.fillna("راحة")
+    
+    # ملء الجدول بالبيانات
+    for _, row in df.iterrows():
+        doctor = row['الطبيب']
+        day = row['اليوم']
+        shift = row['المناوبة']
+        area = row['القسم']
+        schedule_grid.loc[doctor, day] = f"{shift} - {area}"
+    
+    # إنشاء ملف Excel مع التنسيقات الاحترافية
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        # ورقة العرض اليومي
-        daily_view = df.pivot_table(index=["اليوم", "المناوبة"], columns="القسم", values="الطبيب", aggfunc=lambda x: ', '.join(x)).fillna('')
-        daily_view.to_excel(writer, sheet_name="العرض اليومي")
-
-        # ورقة عرض الأطباء (الملونة)
-        roster_df.to_excel(writer, sheet_name="عرض الأطباء")
+        schedule_grid.to_excel(writer, sheet_name=f'مناوبات {month}-{year}')
         
         workbook = writer.book
-        worksheet = writer.sheets["عرض الأطباء"]
+        worksheet = writer.sheets[f'مناوبات {month}-{year}']
         
-        # تعريف التنسيقات الملونة
-        colors = {
-            "☀️": workbook.add_format({'bg_color': '#E6F3FF', 'font_color': '#004085'}),
-            "🌙": workbook.add_format({'bg_color': '#FFF2E6', 'font_color': '#856404'}),
-            "🌃": workbook.add_format({'bg_color': '#E6E6FA', 'font_color': '#38006b'}),
+        # تعريف التنسيقات (مطابقة للصورة)
+        header_format = workbook.add_format({
+            'bold': True, 'font_size': 11, 'bg_color': '#4472C4',
+            'font_color': 'white', 'align': 'center', 'valign': 'vcenter',
+            'border': 1
+        })
+        
+        doctor_name_format = workbook.add_format({
+            'bold': True, 'font_size': 10, 'bg_color': '#D9E1F2',
+            'align': 'right', 'valign': 'vcenter', 'border': 1
+        })
+        
+        # تنسيقات المناوبات (ألوان مطابقة للصورة تمامًا)
+        shift_formats = {
+            '☀️ صبح': workbook.add_format({
+                'bg_color': '#92D050', 'font_color': '#000000',
+                'align': 'center', 'valign': 'vcenter', 
+                'font_size': 9, 'bold': True, 'border': 1
+            }),
+            '🌙 مساء': workbook.add_format({
+                'bg_color': '#FFC000', 'font_color': '#000000',
+                'align': 'center', 'valign': 'vcenter',
+                'font_size': 9, 'bold': True, 'border': 1
+            }),
+            '🌃 ليل': workbook.add_format({
+                'bg_color': '#5B9BD5', 'font_color': '#FFFFFF',
+                'align': 'center', 'valign': 'vcenter',
+                'font_size': 9, 'bold': True, 'border': 1
+            }),
+            'راحة': workbook.add_format({
+                'bg_color': '#D9D9D9', 'font_color': '#666666',
+                'align': 'center', 'valign': 'vcenter',
+                'font_size': 9, 'border': 1
+            })
         }
-
-        # تطبيق التنسيق على الخلايا
-        for col_num, value in enumerate(roster_df.columns.values):
-            for row_num, val_cell in enumerate(roster_df[value]):
-                for key, color_format in colors.items():
-                    if key in str(val_cell):
-                        worksheet.write(row_num + 1, col_num + 1, val_cell, color_format)
-                        break
         
-        # ضبط عرض الأعمدة
-        worksheet.set_column(0, 0, 20) # عمود أسماء الأطباء
-        worksheet.set_column(1, len(roster_df.columns), 15) # أعمدة الأيام
-
+        # تطبيق التنسيق على العناوين
+        worksheet.write(0, 0, 'الطبيب / الأطباء', doctor_name_format)
+        worksheet.set_column(0, 0, 25)
+        
+        for col_num in range(1, num_days + 1):
+            worksheet.write(0, col_num, col_num, header_format)
+            worksheet.set_column(col_num, col_num, 5)
+        
+        # تطبيق التنسيق على بيانات الجدول
+        for row_num, doctor in enumerate(schedule_grid.index, 1):
+            worksheet.write(row_num, 0, doctor, doctor_name_format)
+            
+            for col_num, day in enumerate(schedule_grid.columns, 1):
+                cell_value = schedule_grid.loc[doctor, day]
+                
+                # اختيار التنسيق المناسب
+                cell_format = shift_formats['راحة']  # افتراضي
+                display_text = ""
+                
+                if cell_value == "راحة":
+                    display_text = ""
+                    cell_format = shift_formats['راحة']
+                else:
+                    # استخراج نوع المناوبة والقسم
+                    for shift_key in ['☀️ صبح', '🌙 مساء', '🌃 ليل']:
+                        if shift_key in cell_value:
+                            cell_format = shift_formats[shift_key]
+                            area = cell_value.replace(f"{shift_key} - ", "")
+                            display_text = area  # عرض القسم فقط
+                            break
+                
+                worksheet.write(row_num, col_num, display_text, cell_format)
+        
+        # تجميد العمود الأول والصف الأول
+        worksheet.freeze_panes(1, 1)
+    
     return output.getvalue()
 
 def display_daily_view(df, year, month):
@@ -153,16 +226,16 @@ with st.sidebar:
     
     if st.session_state.schedule_df is not None:
         st.divider()
-        st.header("📥 تصدير الجدول")
-        roster_df = st.session_state.schedule_df.pivot_table(index="الطبيب", columns="اليوم", values="المناوبة", aggfunc=lambda x: ' / '.join(x)).fillna("راحة")
-        excel_data = create_styled_excel(st.session_state.schedule_df, roster_df, year_input, month_input)
+        st.header("📥 تصدير احترافي")
+        excel_data = create_professional_excel(st.session_state.schedule_df, year_input, month_input)
         st.download_button(
-            label="تنزيل جدول Excel الملون",
+            label="📊 تنزيل جدول Excel احترافي",
             data=excel_data,
-            file_name=f"جدول_المناوبات_{year_input}-{month_input}.xlsx",
+            file_name=f"جدول_مناوبات_{year_input}_{month_input:02d}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
+        st.caption("💡 الملف سيكون مطابقًا تمامًا للتصميم المطلوب")
 
 # العرض الرئيسي
 if st.session_state.schedule_df is not None:
