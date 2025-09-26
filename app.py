@@ -41,7 +41,7 @@ if 'schedule_df' not in st.session_state: st.session_state.schedule_df = None
 # ==================================
 @st.cache_data(ttl=600)
 def generate_schedule_pro(num_days, doctors, constraints):
-    SHIFTS = ["☀️", "🌙", "🌃"] # استخدام الرموز فقط
+    SHIFTS = ["☀️", "🌙", "🌃"]
     AREAS_MIN_COVERAGE = {"فرز": 2, "تنفسية": 1, "ملاحظة": 4, "انعاش": 3}
     ALL_AREAS = list(AREAS_MIN_COVERAGE.keys())
     model = cp_model.CpModel()
@@ -73,7 +73,7 @@ def generate_schedule_pro(num_days, doctors, constraints):
     return None
 
 # ==================================
-# 4. دوال العرض والتصدير الاحترافية
+# 4. دوال العرض والتصدير
 # ==================================
 def create_professional_excel(df, year, month):
     output = BytesIO()
@@ -117,6 +117,7 @@ def create_professional_excel(df, year, month):
                         break
                 worksheet.write(row_num, col_num, display_text, cell_format)
         worksheet.freeze_panes(1, 1)
+        
     return output.getvalue()
 
 def display_daily_view(df, year, month):
@@ -178,4 +179,3 @@ if st.session_state.schedule_df is not None:
     display_daily_view(st.session_state.schedule_df, year_input, month_input)
 else:
     st.info("اضغط على 'توليد الجدول' في الشريط الجانبي لبدء العملية.")
-
