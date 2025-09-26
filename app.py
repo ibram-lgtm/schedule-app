@@ -7,14 +7,14 @@ import calendar
 # ==================================
 # 1. إعدادات التطبيق والواجهة
 # ==================================
-st.set_page_config(layout="wide", page_title="جدول المناوبات الذكي Pro")
+st.set_page_config(layout="wide", page_title="جدول المناوبات الذكي (Rota View)")
 
 # --- كود التصميم المخصص ---
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap');
     html, body, [class*="st-"] { font-family: 'Tajawal', sans-serif; color: #121212; }
-    :root { --primary-color: #667eea; --background-color: #f0f4f8; --card-bg: white; --border-color: #e9ecef; }
+    :root { --primary-color: #4A90E2; --background-color: #f0f4f8; --card-bg: white; --border-color: #e9ecef; }
     .stApp { background-color: var(--background-color); }
     h1, h2, h3, h4, h5 { color: var(--primary-color); }
     .daily-view-container { display: flex; overflow-x: auto; padding: 15px; background-color: var(--card-bg); border-radius: 12px; border: 1px solid var(--border-color); gap: 15px; }
@@ -26,8 +26,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🗓️ جدول المناوبات الذكي Pro")
-st.markdown("### نظام متكامل مع تصدير Excel احترافي")
+st.title("🗓️ جدول المناوبات الذكي (Rota View)")
+st.markdown("### نظام احترافي لعرض وتصدير جداول المناوبات")
 
 # ==================================
 # 2. تهيئة البيانات
@@ -37,11 +37,11 @@ if 'constraints' not in st.session_state: st.session_state.constraints = {doc: {
 if 'schedule_df' not in st.session_state: st.session_state.schedule_df = None
 
 # ==================================
-# 3. الخوارزمية (بدون تغيير)
+# 3. الخوارزمية
 # ==================================
 @st.cache_data(ttl=600)
 def generate_schedule_pro(num_days, doctors, constraints):
-    SHIFTS = ["☀️ صبح", "🌙 مساء", "🌃 ليل"]
+    SHIFTS = ["☀️", "🌙", "🌃"] # استخدام الرموز فقط
     AREAS_MIN_COVERAGE = {"فرز": 2, "تنفسية": 1, "ملاحظة": 4, "انعاش": 3}
     ALL_AREAS = list(AREAS_MIN_COVERAGE.keys())
     model = cp_model.CpModel()
@@ -68,178 +68,21 @@ def generate_schedule_pro(num_days, doctors, constraints):
                 for shift in SHIFTS:
                     for area in ALL_AREAS:
                         if solver.Value(shifts_vars[(doc, day, shift, area)]) == 1:
-                            data.append({"الطبيب": doc, "اليوم": day + 1, "المناوبة": f"{shift}", "القسم": area})
+                            data.append({"الطبيب": doc, "اليوم": day + 1, "المناوبة": shift, "القسم": area})
         return pd.DataFrame(data)
     return None
 
 # ==================================
-# 4. دالة إنشاء Excel الاحترافي (حسب الصورة المرفقة)
+# 4. دوال العرض والتصدير الاحترافية
 # ==================================
 def create_professional_excel(df, year, month):
-    """
-    إنشاء ملف Excel احترافي مطابق للصورة:
-    - كل طبيب = صف واحد
-    - كل يوم = عمود واحد  
-    - ألوان مميزة للمناوبات
-    """
     output = BytesIO()
     num_days = calendar.monthrange(year, month)[1]
+    doctors = sorted(df['الطبيب'].unique().tolist())
+    schedule_grid = pd.DataFrame(index=doctors, columns=range(1, num_days + 1)).fillna("راحة")
     
-    # الحصول على قائمة الأطباء المرتبة
-    doctors = df['الطبيب'].unique().tolist()
-    doctors.sort()
-    
-    # إنشاء جدول فارغ بالتصميم المطلوب
-    schedule_grid = pd.DataFrame(index=doctors, columns=range(1, num_days + 1))
-    schedule_grid = schedule_grid.fillna("راحة")
-    
-    # ملء الجدول بالبيانات
     for _, row in df.iterrows():
-        doctor = row['الطبيب']
-        day = row['اليوم']
-        shift = row['المناوبة']
-        area = row['القسم']
-        schedule_grid.loc[doctor, day] = f"{shift} - {area}"
-    
-    # إنشاء ملف Excel مع التنسيقات الاحترافية
+        schedule_grid.loc[row['الطبيب'], row['اليوم']] = f"{row['المناوبة']} {row['القسم']}"
+
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        schedule_grid.to_excel(writer, sheet_name=f'مناوبات {month}-{year}')
-        
-        workbook = writer.book
-        worksheet = writer.sheets[f'مناوبات {month}-{year}']
-        
-        # تعريف التنسيقات (مطابقة للصورة)
-        header_format = workbook.add_format({
-            'bold': True, 'font_size': 11, 'bg_color': '#4472C4',
-            'font_color': 'white', 'align': 'center', 'valign': 'vcenter',
-            'border': 1
-        })
-        
-        doctor_name_format = workbook.add_format({
-            'bold': True, 'font_size': 10, 'bg_color': '#D9E1F2',
-            'align': 'right', 'valign': 'vcenter', 'border': 1
-        })
-        
-        # تنسيقات المناوبات (ألوان مطابقة للصورة تمامًا)
-        shift_formats = {
-            '☀️ صبح': workbook.add_format({
-                'bg_color': '#92D050', 'font_color': '#000000',
-                'align': 'center', 'valign': 'vcenter', 
-                'font_size': 9, 'bold': True, 'border': 1
-            }),
-            '🌙 مساء': workbook.add_format({
-                'bg_color': '#FFC000', 'font_color': '#000000',
-                'align': 'center', 'valign': 'vcenter',
-                'font_size': 9, 'bold': True, 'border': 1
-            }),
-            '🌃 ليل': workbook.add_format({
-                'bg_color': '#5B9BD5', 'font_color': '#FFFFFF',
-                'align': 'center', 'valign': 'vcenter',
-                'font_size': 9, 'bold': True, 'border': 1
-            }),
-            'راحة': workbook.add_format({
-                'bg_color': '#D9D9D9', 'font_color': '#666666',
-                'align': 'center', 'valign': 'vcenter',
-                'font_size': 9, 'border': 1
-            })
-        }
-        
-        # تطبيق التنسيق على العناوين
-        worksheet.write(0, 0, 'الطبيب / الأطباء', doctor_name_format)
-        worksheet.set_column(0, 0, 25)
-        
-        for col_num in range(1, num_days + 1):
-            worksheet.write(0, col_num, col_num, header_format)
-            worksheet.set_column(col_num, col_num, 5)
-        
-        # تطبيق التنسيق على بيانات الجدول
-        for row_num, doctor in enumerate(schedule_grid.index, 1):
-            worksheet.write(row_num, 0, doctor, doctor_name_format)
-            
-            for col_num, day in enumerate(schedule_grid.columns, 1):
-                cell_value = schedule_grid.loc[doctor, day]
-                
-                # اختيار التنسيق المناسب
-                cell_format = shift_formats['راحة']  # افتراضي
-                display_text = ""
-                
-                if cell_value == "راحة":
-                    display_text = ""
-                    cell_format = shift_formats['راحة']
-                else:
-                    # استخراج نوع المناوبة والقسم
-                    for shift_key in ['☀️ صبح', '🌙 مساء', '🌃 ليل']:
-                        if shift_key in cell_value:
-                            cell_format = shift_formats[shift_key]
-                            area = cell_value.replace(f"{shift_key} - ", "")
-                            display_text = area  # عرض القسم فقط
-                            break
-                
-                worksheet.write(row_num, col_num, display_text, cell_format)
-        
-        # تجميد العمود الأول والصف الأول
-        worksheet.freeze_panes(1, 1)
-    
-    return output.getvalue()
-
-def display_daily_view(df, year, month):
-    st.header("📅 العرض اليومي للمناوبات")
-    html_content = '<div class="daily-view-container">'
-    num_days_in_month = calendar.monthrange(year, month)[1]
-    arabic_weekdays = {"Sun": "الأحد", "Mon": "الاثنين", "Tue": "الثلاثاء", "Wed": "الأربعاء", "Thu": "الخميس", "Fri": "الجمعة", "Sat": "السبت"}
-    for day in range(1, num_days_in_month + 1):
-        day_df = df[df['اليوم'] == day]
-        weekday_abbr = calendar.day_abbr[calendar.weekday(year, month, day)]
-        weekday_name = arabic_weekdays.get(weekday_abbr, weekday_abbr)
-        html_content += f'<div class="day-column"><h4>اليوم {day} <small>({weekday_name})</small></h4>'
-        if day_df.empty:
-            html_content += "<p><i>لا توجد مناوبات</i></p>"
-        else:
-            for shift_name in ["☀️ صبح", "🌙 مساء", "🌃 ليل"]:
-                shift_df = day_df[day_df['المناوبة'] == shift_name]
-                if not shift_df.empty:
-                    html_content += f'<div class="shift-group"><h5>{shift_name}</h5>'
-                    for _, row in shift_df.iterrows():
-                        html_content += f'<div class="doctor-card">{row["الطبيب"]} - {row["القسم"]}</div>'
-                    html_content += '</div>'
-        html_content += '</div>'
-    html_content += '</div>'
-    st.markdown(html_content, unsafe_allow_html=True)
-
-# ==================================
-# 5. بناء الواجهة التفاعلية
-# ==================================
-with st.sidebar:
-    st.header("التحكم في الجدول")
-    year_input = st.number_input("السنة", value=2025, min_value=2020, max_value=2050)
-    month_input = st.number_input("الشهر", value=9, min_value=1, max_value=12)
-    num_days_input = calendar.monthrange(year_input, month_input)[1]
-    
-    if st.button("🚀 توليد / تحديث الجدول", use_container_width=True):
-        with st.spinner("🧠 الخوارزمية تعمل..."):
-            schedule = generate_schedule_pro(num_days_input, st.session_state.doctors, st.session_state.constraints)
-            if schedule is not None:
-                st.session_state.schedule_df = schedule
-                st.success("🎉 تم إنشاء الجدول بنجاح!")
-            else:
-                st.error("لم يتم العثور على حل.")
-    
-    if st.session_state.schedule_df is not None:
-        st.divider()
-        st.header("📥 تصدير احترافي")
-        excel_data = create_professional_excel(st.session_state.schedule_df, year_input, month_input)
-        st.download_button(
-            label="📊 تنزيل جدول Excel احترافي",
-            data=excel_data,
-            file_name=f"جدول_مناوبات_{year_input}_{month_input:02d}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-        st.caption("💡 الملف سيكون مطابقًا تمامًا للتصميم المطلوب")
-
-# العرض الرئيسي
-if st.session_state.schedule_df is not None:
-    display_daily_view(st.session_state.schedule_df, year_input, month_input)
-else:
-    st.info("اضغط على 'توليد الجدول' في الشريط الجانبي لبدء العملية.")
 
