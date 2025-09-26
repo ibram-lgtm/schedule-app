@@ -1,14 +1,14 @@
-# app.py — Rota Matrix (كامل)
+# app.py — Rota Matrix Pro (كامل)
 # ------------------------------------------------------------
 # - GA + CP-SAT (إن توفر OR-Tools) مع قيد: لا يزيد عن 6 شفتات متتالية
-# - إدارة أطباء: لصق جماعي / إضافة فردية
-# - قيود لكل طبيب: سقف شفتاته، أيام غير متاح، تفضيلات ومنوعات الشفتات
+# - إدارة أطباء: لصق جماعي / إضافة فردية مع قيود لكل طبيب
 # - تخصيص: إضافة شفت جديد وتعديل ألوان الشفتات
 # - لغة: عربي / English
-# - حفظ/تحميل تهيئة (JSON) + تفريغ
+# - حفظ/تحميل/تفريغ التهيئة (JSON)
 # - عرض مصفوفي (اليوم+التاريخ في الأعلى) وبطاقات داخل الخلايا
-# - عرض حسب الوردية (من في كل شفت)
+# - عرض حسب الوردية (من في الشفت)
 # - تصدير Excel ملوّن يطابق العرض + PDF (إن توفر reportlab)
+# - إصلاح اختلاف "إنعاش/انعاش" وتطبيع الأسماء
 
 import streamlit as st
 import pandas as pd
@@ -19,7 +19,7 @@ import json
 from dataclasses import dataclass
 from typing import Dict, Tuple, List, Optional
 
-# === محاولات مكتبات اختيارية ===
+# محاولات مكتبات اختيارية
 try:
     from ortools.sat.python import cp_model
     ORTOOLS_AVAILABLE = True
@@ -34,9 +34,6 @@ try:
 except Exception:
     REPORTLAB_AVAILABLE = False
 
-# -----------------------
-# إعداد الواجهة العام
-# -----------------------
 st.set_page_config(page_title="Rota Matrix Pro", layout="wide")
 
 # ===== اللغات =====
@@ -210,7 +207,7 @@ def init_state():
     if "doctors" not in st.session_state:
         st.session_state.doctors = [f"طبيب {i+1}" for i in range(20)]
     if "overrides" not in st.session_state:
-        # overrides[name][day:int] = "راحة" أو "صباح - فرز" (نص)
+        # overrides[name][day:int] = "راحة" أو "صباح - فرز"
         st.session_state.overrides: Dict[str, Dict[int, str]] = {}
     if "doctor_prefs" not in st.session_state:
         # doctor_prefs[name] = {"cap": None, "days_off": set(), "preferred": set(), "forbidden": set()}
@@ -220,13 +217,28 @@ def init_state():
     if "shift_colors" not in st.session_state:
         st.session_state.shift_colors = {"صباح": "#EAF3FF", "مساء": "#FFF2E6", "ليل": "#EEE8FF", "راحة": "#F2F3F7"}
     if "areas" not in st.session_state:
-        st.session_state.areas = ["فرز", "تنفسية", "ملاحظة", "انعاش"]
+        st.session_state.areas = ["فرز", "تنفسية", "ملاحظة", "إنعاش"]
     if "coverage" not in st.session_state:
-        st.session_state.coverage = {"فرز":2, "تنفسية":1, "ملاحظة":4, "انعاش":3}
+        st.session_state.coverage = {"فرز": 2, "تنفسية": 1, "ملاحظة": 4, "إنعاش": 3}
 
 init_state()
 
-# ===== أنماط CSS (ديناميكية حسب ألوان الشفتات) =====
+# تطبيع أسماء الأقسام (حل اختلاف إنعاش/انعاش)
+def normalize_vocab():
+    cov = st.session_state.get("coverage", {})
+    if "انعاش" in cov and "إنعاش" not in cov:
+        cov["إنعاش"] = cov.pop("انعاش")
+    st.session_state.coverage = {
+        ("إنعاش" if k in ("انعاش", "إنعاش") else k): v
+        for k, v in cov.items()
+    }
+    st.session_state.areas = [
+        ("إنعاش" if a in ("انعاش", "إنعاش") else a)
+        for a in st.session_state.get("areas", [])
+    ]
+normalize_vocab()
+
+# ===== أنماط CSS ديناميكية حسب ألوان الشفتات =====
 def inject_dynamic_css():
     css = "<style>"
     for idx, s in enumerate(st.session_state.shifts):
@@ -247,7 +259,6 @@ def inject_dynamic_css():
     </style>
     """
     st.markdown(css, unsafe_allow_html=True)
-
 inject_dynamic_css()
 
 # ===== أدوات مساعدة =====
@@ -273,12 +284,17 @@ def parse_days_list(text: str, days_max: int) -> List[int]:
                 out.append(v)
     return sorted(set(out))
 
-# ===== واجهة الإعدادات العليا =====
+def normalize_area(ar: str) -> str:
+    return "إنعاش" if ar in ("انعاش", "إنعاش") else ar
+
+# ===== الشريط الجانبي =====
 with st.sidebar:
     st.header(L("settings"))
-    st.selectbox(L("language"), [("ar", L("arabic")), ("en", L("english"))],
-                 index=0 if st.session_state.lang=="ar" else 1,
-                 key="lang", format_func=lambda x: x[1])
+
+    # لغة
+    lang_choice = st.radio(L("language"), [LANGS['ar']['arabic'], LANGS['en']['english']],
+                           index=0 if st.session_state.lang=="ar" else 1, horizontal=True)
+    st.session_state.lang = "ar" if lang_choice == LANGS['ar']['arabic'] else "en"
 
     year  = st.number_input(L("year"), value=2025, step=1)
     month = st.number_input(L("month"), value=9, min_value=1, max_value=12, step=1)
@@ -287,15 +303,19 @@ with st.sidebar:
     per_doc_cap = st.slider(L("per_doc_cap"), 1, 60, 18)
     max_consecutive = st.slider(L("max_consecutive"), 2, 14, 6)
 
+    min_total = st.slider(L("min_total"), 0, 100, 10)
+    max_total = st.slider(L("max_total"), 0, 100, 13)
+
     st.caption(L("coverage_caption"))
     c1, c2 = st.columns(2)
     with c1:
-        cov_frz = st.number_input(L("triage"), 0, 40, st.session_state.coverage["فرز"])
-        cov_tnf = st.number_input(L("resp"), 0, 40, st.session_state.coverage["تنفسية"])
+        cov_frz = st.number_input(L("triage"), 0, 40, st.session_state.coverage.get("فرز", 2))
+        cov_tnf = st.number_input(L("resp"), 0, 40, st.session_state.coverage.get("تنفسية", 1))
     with c2:
-        cov_mlh = st.number_input(L("obs"), 0, 40, st.session_state.coverage["ملاحظة"])
-        cov_inash = st.number_input(L("icu"), 0, 40, st.session_state.coverage["إنعاش"])
-    st.session_state.coverage = {"فرز":cov_frz, "تنفسية":cov_tnf, "ملاحظة":cov_mlh, "انعاش":cov_inash}
+        cov_mlh = st.number_input(L("obs"), 0, 40, st.session_state.coverage.get("ملاحظة", 4))
+        cov_inash = st.number_input(L("icu"), 0, 40, st.session_state.coverage.get("إنعاش", st.session_state.coverage.get("انعاش", 3)))
+
+    st.session_state.coverage = {"فرز":cov_frz, "تنفسية":cov_tnf, "ملاحظة":cov_mlh, "إنعاش":cov_inash}
 
     engine = st.radio(L("engine"), [L("ga"), L("cpsat")], index=0)
     if engine == L("ga"):
@@ -307,9 +327,8 @@ with st.sidebar:
         cp_limit   = st.slider("CP-SAT time limit (s)", 5, 300, 90)
         cp_balance = st.checkbox("Balance load (objective)", True)
 
-    # زر التخصيص: الشفتات والألوان
+    # تخصيص الشفتات والألوان
     with st.expander(L("customization")):
-        st.write("• " + L("add_shift"))
         cols = st.columns([2,1,1])
         with cols[0]:
             new_shift = st.text_input(L("shift_name"), "")
@@ -321,17 +340,17 @@ with st.sidebar:
                 if s not in st.session_state.shifts:
                     st.session_state.shifts.append(s)
                     st.session_state.shift_colors[s] = new_shift_color.strip() or "#E0F0FF"
-                    st.success("✔️")
+                    st.success("تمت الإضافة.")
                 else:
-                    st.info("Already exists.")
-        st.write("• " + L("apply_colors"))
+                    st.info("الشفت موجود مسبقًا.")
+        st.write(L("apply_colors"))
         for s in list(st.session_state.shifts) + ["راحة"]:
             st.session_state.shift_colors[s] = st.text_input(f"{s} color", st.session_state.shift_colors.get(s, "#F0F0F0"), key=f"col_{s}")
 
-# ===== تبويب إدارة الأسماء والقيود =====
+# ===== إدارة الأطباء =====
 st.title(L("title"))
-
 st.header(L("doctors_mgmt"))
+
 with st.expander(L("paste_list")):
     pasted = st.text_area("", height=150, placeholder="مثال:\nأحمد سعيد\nمحمد علي\n...").strip()
     mode = st.radio("Mode", [L("mode_replace"), L("mode_append")], horizontal=True)
@@ -349,21 +368,22 @@ with st.expander(L("paste_list")):
                         st.session_state.doctors.append(n)
             st.success(f"{len(st.session_state.doctors)} {L('kpi_docs')}")
         else:
-            st.warning("No names found.")
+            st.warning("لم يتم العثور على أسماء.")
 
 with st.expander(L("add_one")):
     one_name = st.text_input(L("doctor_name"), "")
     if st.button(L("add_doc")) and one_name.strip():
         if one_name not in st.session_state.doctors:
             st.session_state.doctors.append(one_name.strip())
-            st.success("✔️")
+            st.success("تمت الإضافة.")
         else:
-            st.info("Exists.")
+            st.info("الاسم موجود مسبقًا.")
 
+# ===== قيود/تفضيلات لكل طبيب =====
 st.header(L("per_doc_prefs"))
 with st.expander(L("per_doc_prefs")):
     if not st.session_state.doctors:
-        st.warning("Add doctors first.")
+        st.warning("أضف أسماء أولًا.")
     else:
         target_doc = st.selectbox(L("select_doctor"), st.session_state.doctors)
         current = st.session_state.doctor_prefs.get(target_doc, {"cap": None, "days_off": set(), "preferred": set(), "forbidden": set()})
@@ -378,12 +398,13 @@ with st.expander(L("per_doc_prefs")):
                 "preferred": set(pref),
                 "forbidden": set(ban),
             }
-            st.success("✔️")
+            st.success("تم الحفظ.")
 
+# ===== تخصيص يدوي =====
 st.header(L("manual_override"))
 with st.expander(L("manual_override")):
     if not st.session_state.doctors:
-        st.warning("Add doctors first.")
+        st.warning("أضف أسماء أولًا.")
     else:
         doc_o = st.selectbox(L("select_doctor")+" (override)", st.session_state.doctors, key="ov_doctor")
         spec = st.text_area(L("manual_hint"), height=100, key="ov_spec")
@@ -404,12 +425,13 @@ with st.expander(L("manual_override")):
                 else:
                     if "-" not in rhs: continue
                     sh, ar = [x.strip() for x in rhs.split("-", 1)]
+                    ar = normalize_area(ar)
                     mapping[d] = f"{sh} - {ar}"
             return mapping
         if st.button(L("apply_override")):
             mp = parse_override_spec(spec)
             st.session_state.overrides.setdefault(doc_o, {}).update(mp)
-            st.success(f"{len(mp)} ✔️")
+            st.success(f"تم تطبيق {len(mp)} عنصرًا.")
 
 # ===== حفظ/تحميل/تفريغ =====
 st.header(L("save_load"))
@@ -420,8 +442,10 @@ with c1:
             "lang": st.session_state.lang,
             "doctors": st.session_state.doctors,
             "overrides": st.session_state.overrides,
-            "doctor_prefs": {k: {"cap": v.get("cap"), "days_off": list(v.get("days_off", [])),
-                                 "preferred": list(v.get("preferred", [])), "forbidden": list(v.get("forbidden", []))}
+            "doctor_prefs": {k: {"cap": v.get("cap"),
+                                 "days_off": list(v.get("days_off", [])),
+                                 "preferred": list(v.get("preferred", [])),
+                                 "forbidden": list(v.get("forbidden", []))}
                              for k,v in st.session_state.doctor_prefs.items()},
             "shifts": st.session_state.shifts,
             "shift_colors": st.session_state.shift_colors,
@@ -448,16 +472,20 @@ with c2:
             }
             st.session_state.shifts = data.get("shifts", ["صباح","مساء","ليل"])
             st.session_state.shift_colors = data.get("shift_colors", {"صباح":"#EAF3FF","مساء":"#FFF2E6","ليل":"#EEE8FF","راحة":"#F2F3F7"})
-            st.session_state.areas = data.get("areas", ["فرز","تنفسية","ملاحظة","انعاش"])
-            st.session_state.coverage = data.get("coverage", {"فرز":2,"تنفسية":1,"ملاحظة":4,"انعاش":3})
-            st.success("Loaded.")
+            st.session_state.areas = [normalize_area(a) for a in data.get("areas", ["فرز","تنفسية","ملاحظة","إنعاش"])]
+            cov_in = data.get("coverage", {"فرز":2,"تنفسية":1,"ملاحظة":4,"إنعاش":3})
+            # تطبيع "انعاش"
+            if "انعاش" in cov_in and "إنعاش" not in cov_in:
+                cov_in["إنعاش"] = cov_in.pop("انعاش")
+            st.session_state.coverage = cov_in
+            st.success("تم التحميل.")
         except Exception as e:
             st.error(f"Load error: {e}")
 with c3:
     if st.button(L("clear")):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
-        st.experimental_rerun()
+        st.rerun()
 
 # ===== خوارزميات الجدولة =====
 CODE_REST = -1
@@ -478,32 +506,33 @@ class GAParams:
     balance_weight: float = 1.0
     penalty_scale: float = 50.0
     max_consecutive: int = 6
-    doc_caps: Optional[List[Optional[int]]] = None  # per-doctor cap override
-    preferred: Optional[List[set]] = None           # per-doctor preferred shifts (names)
-    forbidden: Optional[List[set]] = None           # per-doctor forbidden shifts (names)
+    doc_caps: Optional[List[Optional[int]]] = None
+    preferred: Optional[List[set]] = None
+    forbidden: Optional[List[set]] = None
 
 def build_locks(doctors: List[str], days_cnt:int) -> np.ndarray:
     locks = np.full((len(doctors), days_cnt), CODE_FREE, dtype=np.int16)
     SHIFT_AREA = get_SHIFT_AREA()
-    # days-off and manual overrides
     name_to_idx = {d:i for i,d in enumerate(doctors)}
+    # days-off
     for name, prefs in st.session_state.doctor_prefs.items():
         if name not in name_to_idx: continue
         i = name_to_idx[name]
         for d in prefs.get("days_off", set()):
             if 1<=d<=days_cnt:
                 locks[i, d-1] = CODE_REST
+    # manual overrides
     for name, mp in st.session_state.overrides.items():
         if name not in name_to_idx: continue
         i = name_to_idx[name]
         for d, val in mp.items():
             if 1<=d<=days_cnt:
-                if val == "راحة":
+                if val == L("rest") or val == "راحة":
                     locks[i, d-1] = CODE_REST
                 else:
-                    # val like "صباح - فرز"
                     try:
                         sh, ar = [x.strip() for x in val.split("-", 1)]
+                        ar = normalize_area(ar)
                         code = SHIFT_AREA.index((sh, ar))
                         locks[i, d-1] = code
                     except Exception:
@@ -530,16 +559,15 @@ def enforce_max_consec(genes: np.ndarray, max_consecutive:int, locks: np.ndarray
                         run = 0
             else:
                 run = 0
-    # re-apply locks
     g = np.where(locks!=CODE_FREE, locks, g)
     return g
 
-def ga_decode(genes:np.ndarray, days:int):
+def ga_decode(genes:np.ndarray, days_cnt:int):
     SHIFT_AREA = get_SHIFT_AREA()
     per_doc = (genes >= 0).sum(axis=1)
-    totals_shift = {(d, s):0 for d in range(days) for s in st.session_state.shifts}
-    totals_area  = {(d, s, a):0 for d in range(days) for s in st.session_state.shifts for a in st.session_state.areas}
-    for day in range(days):
+    totals_shift = {(d, s):0 for d in range(days_cnt) for s in st.session_state.shifts}
+    totals_area  = {(d, s, a):0 for d in range(days_cnt) for s in st.session_state.shifts for a in st.session_state.areas}
+    for day in range(days_cnt):
         vals = genes[:, day]
         for v in vals[vals>=0]:
             s, a = SHIFT_AREA[int(v)]
@@ -553,12 +581,9 @@ def ga_fitness(genes:np.ndarray, p:GAParams) -> float:
     # per-doctor caps
     if p.doc_caps:
         for i, cap in enumerate(p.doc_caps):
-            if cap is not None:
-                over = max(0, int(per_doc[i]) - int(cap))
-                pen += over * p.penalty_scale
-            else:
-                over = max(0, int(per_doc[i]) - int(p.per_doc_cap))
-                pen += over * p.penalty_scale
+            limit = cap if cap is not None else p.per_doc_cap
+            over = max(0, int(per_doc[i]) - int(limit))
+            pen += over * p.penalty_scale
     else:
         over = np.clip(per_doc - p.per_doc_cap, 0, None).sum()
         pen += over * p.penalty_scale
@@ -582,15 +607,15 @@ def ga_fitness(genes:np.ndarray, p:GAParams) -> float:
             if v >= 0:
                 s, a = SHIFT_AREA[v]
                 if p.forbidden and p.forbidden[i] and s in p.forbidden[i]:
-                    pen += p.penalty_scale * 6  # heavy
+                    pen += p.penalty_scale * 6
                 if p.preferred and p.preferred[i] and s not in p.preferred[i]:
-                    pen += p.penalty_scale * 0.5  # mild
+                    pen += p.penalty_scale * 0.5
 
     # balance
     var = float(np.var(per_doc.astype(np.float32)))
     pen += var * p.balance_weight
 
-    # max-consecutive violation penalty
+    # max-consecutive penalty
     D, T = genes.shape
     over_runs = 0
     for d in range(D):
@@ -646,7 +671,6 @@ def cpsat_schedule(doctors:List[str], days_cnt:int, cap:int, min_total:int, max_
     SHIFT_AREA = get_SHIFT_AREA()
     model = cp_model.CpModel()
     D = len(doctors)
-    # x[d,day,shift,area]
     x = {}
     for d in range(D):
         for day in range(days_cnt):
@@ -654,7 +678,7 @@ def cpsat_schedule(doctors:List[str], days_cnt:int, cap:int, min_total:int, max_
                 for a in st.session_state.areas:
                     x[(d, day, s, a)] = model.NewBoolVar(f"x_{d}_{day}_{s}_{a}")
 
-    # تغطيات + إجماليات
+    # تغطيات وإجماليات
     for day in range(days_cnt):
         for s in st.session_state.shifts:
             for a in st.session_state.areas:
@@ -668,11 +692,11 @@ def cpsat_schedule(doctors:List[str], days_cnt:int, cap:int, min_total:int, max_
         for d in range(D):
             model.Add(sum(x[(d, day, s, a)] for s in st.session_state.shifts for a in st.session_state.areas) <= 1)
 
-    # أقفال: days-off + overrides
+    # أقفال: أيام راحة / overrides
     for d in range(D):
         for day in range(days_cnt):
             lock = int(locks[d, day])
-            if lock == CODE_FREE: 
+            if lock == CODE_FREE:
                 continue
             if lock == CODE_REST:
                 model.Add(sum(x[(d, day, s, a)] for s in st.session_state.shifts for a in st.session_state.areas) == 0)
@@ -684,7 +708,7 @@ def cpsat_schedule(doctors:List[str], days_cnt:int, cap:int, min_total:int, max_
                         if (ss, aa) != (s, a):
                             model.Add(x[(d, day, ss, aa)] == 0)
 
-    # سقف الطبيب الفردي/العام
+    # سقف الطبيب (فردي/عام)
     totals = {}
     for d in range(D):
         tot = sum(x[(d, day, s, a)] for day in range(days_cnt) for s in st.session_state.shifts for a in st.session_state.areas)
@@ -692,7 +716,7 @@ def cpsat_schedule(doctors:List[str], days_cnt:int, cap:int, min_total:int, max_
         model.Add(tot <= int(cap_d))
         totals[d] = tot
 
-    # max consecutive
+    # قيد السلاسل المتتالية
     y = {}
     for d in range(D):
         for day in range(days_cnt):
@@ -750,7 +774,6 @@ def to_matrix(df: pd.DataFrame, days_cnt:int, doctors:List[str]) -> pd.DataFrame
     return t.reindex(index=doctors, columns=range(1, days_cnt+1), fill_value=L("rest"))
 
 def shift_css_class(shift_name:str) -> str:
-    # map shift name to index class
     if shift_name == L("rest") or shift_name == "راحة": return "s-rest"
     try:
         idx = st.session_state.shifts.index(shift_name)
@@ -760,7 +783,6 @@ def shift_css_class(shift_name:str) -> str:
 
 def render_matrix_cards(rota: pd.DataFrame, year:int, month:int):
     cols = rota.columns.tolist()
-    # header
     head_cells = []
     for d in cols:
         head_cells.append(
@@ -769,7 +791,6 @@ def render_matrix_cards(rota: pd.DataFrame, year:int, month:int):
         )
     thead = "<thead><tr><th>"+L("doctor")+"</th>" + "".join(head_cells) + "</tr></thead>"
 
-    # body
     body_rows = []
     for doc in rota.index:
         tds = [f"<td class='doc'>{doc}</td>"]
@@ -805,26 +826,21 @@ def export_matrix_to_excel(rota: pd.DataFrame, year:int, month:int) -> bytes:
                                 'reading_order':2})
     doc_fmt = wb.add_format({'bold': True, 'align':'right', 'valign':'vcenter',
                              'fg_color':'#FFFFFF', 'border':1, 'reading_order':2})
-    # base for rest
     rest_fmt = wb.add_format({'align':'center','valign':'vcenter','text_wrap':True,'border':1,
                               'fg_color': st.session_state.shift_colors.get("راحة", "#F2F3F7"),
                               'font_color':'#6B7280','reading_order':2})
-    # dynamic formats per shift
     shift_fmts = {}
     for s in st.session_state.shifts:
         shift_fmts[s] = wb.add_format({'align':'center','valign':'vcenter','text_wrap':True,'border':1,
                                        'fg_color': st.session_state.shift_colors.get(s, "#F0F0F0"),
                                        'reading_order':2})
-    # sizes
     ws.set_row(0, 38)
     ws.set_column(0, 0, 22)
     ws.set_column(1, rota.shape[1], 14)
-    # header
     ws.write(0, 0, L("doctor"), header_fmt)
     for j, day in enumerate(rota.columns, start=1):
         title = f"{arabic_weekday_name(year, int(month), int(day))}\n{int(day)}/{int(month)}"
         ws.write(0, j, title, header_fmt)
-    # body
     for i, doc in enumerate(rota.index, start=1):
         ws.set_row(i, 34)
         ws.write(i, 0, doc, doc_fmt)
@@ -873,14 +889,12 @@ def export_matrix_to_pdf(rota: pd.DataFrame, year:int, month:int) -> bytes:
         ('GRID', (0,0), (-1,-1), 0.3, colors.grey),
         ('BACKGROUND', (0,0), (-1,0), colors.whitesmoke),
     ])
-    # dynamic coloring
     for r in range(1, len(data)):
         for c in range(1, len(header)):
             v = data[r][c]
             if v == L("rest"):
                 ts.add('BACKGROUND', (c, r), (c, r), colors.HexColor(st.session_state.shift_colors.get("راحة","#F2F3F7")))
             else:
-                # get shift name before newline
                 sh = v.split("\n",1)[0]
                 ts.add('BACKGROUND', (c, r), (c, r), colors.HexColor(st.session_state.shift_colors.get(sh, "#F0F0F0")))
     table.setStyle(ts)
@@ -902,7 +916,7 @@ method_used = None
 if st.button(L("generate")):
     locks = build_locks(doctors, days)
 
-    # build per-doctor caps list & prefs
+    # per-doctor caps & preferences
     caps = []
     preferred = []
     forbidden = []
@@ -912,14 +926,17 @@ if st.button(L("generate")):
         preferred.append(set(p.get("preferred", set())))
         forbidden.append(set(p.get("forbidden", set())))
 
-    # feasibility for GA
-    min_needed = days * len(st.session_state.shifts) * st.session_state.coverage[next(iter(st.session_state.coverage))]
-    # أكثر دقة: مجموع الأدنى لكل الأقسام عبر الشفتات، لكن سنعوّل على GA
+    # جدوى تقريبية (للـ GA فقط)
+    min_needed = days * len(st.session_state.shifts) * min_total
+    max_capacity = len(doctors) * per_doc_cap
+    if engine == L("ga") and min_needed > max_capacity:
+        st.warning(L("warn_capacity"))
+        per_doc_cap = max(per_doc_cap, int(np.ceil(min_needed / max(1, len(doctors)))))
+
     if engine == L("ga"):
         with st.spinner("AI scheduling..."):
             p = GAParams(days=days, doctors=len(doctors), per_doc_cap=per_doc_cap,
-                         coverage=coverage, min_total=st.session_state.coverage[next(iter(st.session_state.coverage))],
-                         max_total=st.session_state.coverage[next(iter(st.session_state.coverage))] + (cov_mlh+cov_frz+cov_tnf+cov_inash),  # تقريب للحد الأعلى
+                         coverage=coverage, min_total=min_total, max_total=max_total,
                          generations=gens, population_size=pop, mutation_rate=mut,
                          rest_bias=rest_bias, max_consecutive=max_consecutive,
                          doc_caps=caps, preferred=preferred, forbidden=forbidden)
@@ -935,8 +952,7 @@ if st.button(L("generate")):
             with st.spinner("CP-SAT..."):
                 result_df, status = cpsat_schedule(
                     doctors=doctors, days_cnt=days, cap=per_doc_cap,
-                    min_total=st.session_state.coverage[next(iter(st.session_state.coverage))],
-                    max_total=st.session_state.coverage[next(iter(st.session_state.coverage))] + (cov_mlh+cov_frz+cov_tnf+cov_inash),
+                    min_total=min_total, max_total=max_total,
                     cov=coverage, time_limit=cp_limit, balance=cp_balance,
                     max_consecutive=max_consecutive, locks=locks, per_doc_caps=caps
                 )
@@ -955,7 +971,6 @@ if result_df is not None and not result_df.empty:
         render_matrix_cards(rota, int(year), int(month))
 
     with tab2:
-        # عرض حسب الوردية: اختر يوم/شفت/قسم
         day_sel = st.number_input(L("choose_day"), 1, days, 1)
         shift_sel = st.selectbox(L("choose_shift"), st.session_state.shifts)
         area_sel  = st.selectbox(L("choose_area"), st.session_state.areas)
@@ -979,7 +994,7 @@ if result_df is not None and not result_df.empty:
                                    file_name="rota_matrix.pdf", mime="application/pdf",
                                    use_container_width=True)
             else:
-                st.info("PDF requires 'reportlab'.")
+                st.info("PDF يتطلب مكتبة reportlab.")
 else:
     st.info(L("info_first"))
 
