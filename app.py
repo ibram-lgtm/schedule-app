@@ -1,11 +1,10 @@
-# app.py — ED Rota Sheet (Arabic/English, stable keys)
-# ----------------------------------------------------
-# - CP-SAT solver with slacks (يشغل جدول حتى إن وُجد عجز ويعرضه)
-# - قواعد: تغطية مناطق/وردية، سقف شهري، >=12 إجازة، راحة >=16 ساعة، ≤6 أيام متتالية
-# - عرض على شكل Sheet (الصفوف = الأيام، الأعمدة = الأطباء، القيم = الأكواد F1/A2/…)
-# - يبرز الخلايا الفارغة ويعرض "Coverage gaps" + "Remaining capacity"
-# - تبديل اللغة عربي/English بدون تعارض مفاتيح
-# - تصدير Excel منسّق بثلاث أوراق (Rota, Coverage gaps, Remaining capacity)
+# app.py — ED Rota Sheet (Arabic/English, stable keys, fixed caps widget)
+# -----------------------------------------------------------------------
+# - CP-SAT solver (with slacks) to allow partial solutions + highlight gaps
+# - Rules: coverage, monthly caps, >=12 off days, >=16h rest, <=6 consecutive duty days
+# - Sheet view (rows=days, cols=doctors, values=F1/A2/…); blanks highlighted
+# - Bilingual UI (Arabic/English) with STABLE widget keys to avoid removeChild errors
+# - Excel export (Rota + Coverage gaps + Remaining capacity)
 
 import streamlit as st
 import pandas as pd
@@ -14,7 +13,7 @@ from io import BytesIO
 from dataclasses import dataclass
 from typing import Dict, List
 
-# =============== Try optional deps ===============
+# ===== Optional deps =====
 try:
     from ortools.sat.python import cp_model
     ORTOOLS_AVAILABLE = True
@@ -119,7 +118,7 @@ I18N = {
 def L(k):  # label helper
     return I18N[st.session_state.get("lang","en")][k]
 
-# keep language + stable init
+# ===== init small session =====
 def _init_session():
     ss = st.session_state
     if "lang" not in ss: ss.lang = "en"  # default English
@@ -129,10 +128,9 @@ def _init_session():
     if "result_df" not in ss: ss.result_df = pd.DataFrame()
     if "gaps" not in ss: ss.gaps = pd.DataFrame()
     if "remain" not in ss: ss.remain = pd.DataFrame()
-
 _init_session()
 
-# ============== Areas / Shifts / Labels (static) ==============
+# ===== Static labels =====
 AREAS = ["fast", "resp_triage", "acute", "resus"]
 SHIFTS = ["morning", "evening", "night"]
 AREA_LABEL = {
@@ -147,7 +145,7 @@ AREA_CODE = {"fast":"F","resp_triage":"R","acute":"A","resus":"C"}
 SHIFT_CODE = {"morning":"1","evening":"2","night":"3"}
 def code_for(area,shift): return f"{AREA_CODE[area]}{SHIFT_CODE[shift]}"
 
-# ============== Defaults per your brief ==============
+# ===== Defaults per brief =====
 DEFAULT_COVERAGE = {
     ("fast","morning"):2, ("fast","evening"):2, ("fast","night"):2,
     ("resp_triage","morning"):1, ("resp_triage","evening"):1, ("resp_triage","night"):1,
@@ -186,7 +184,7 @@ DEFAULT_GROUP_MAP = {
 }
 ALL_DOCTORS = list(DEFAULT_GROUP_MAP.keys())
 
-# ============== State for doctors/rules (with stable keys) ==============
+# ===== State for doctors/rules =====
 def ensure_roster_state():
     ss = st.session_state
     if "cov" not in ss: ss.cov = DEFAULT_COVERAGE.copy()
@@ -202,10 +200,9 @@ def ensure_roster_state():
     if "min_off" not in ss: ss.min_off = 12
     if "max_consec" not in ss: ss.max_consec = 6
     if "min_rest" not in ss: ss.min_rest = 16
-
 ensure_roster_state()
 
-# ================= Sidebar (language + dates + globals) =================
+# ===== Sidebar (language + globals) =====
 with st.sidebar:
     st.header(L("general"))
     lang_choice = st.radio(L("language"), [I18N["ar"]["arabic"], I18N["en"]["english"]],
@@ -227,7 +224,7 @@ with st.sidebar:
     st.session_state.max_consec = st.session_state.max_consec_input
     st.session_state.min_rest = st.session_state.min_rest_input
 
-# ================= Tabs =================
+# ===== Tabs =====
 tab_rules, tab_docs, tab_gen, tab_byshift, tab_export = st.tabs(
     [L("rules"), L("doctors_tab"), L("generate"), L("by_shift"), L("export")]
 )
@@ -250,10 +247,16 @@ with tab_rules:
 
     st.subheader(L("group_caps"))
     gc = st.columns(6)
+    # IMPORTANT FIX: do NOT assign to st.session_state[...] in same line as the widget key.
     for i, g in enumerate(["senior","g1","g2","g3","g4","g5"]):
         with gc[i]:
-            st.session_state[f"gcap_{g}"] = st.number_input(f"{g}", 0, 31, GROUP_CAP[g], key=f"gcap_{g}")
-            # (kept in GROUP_CAP for reference; per-doctor cap stored in cap_map)
+            _ = st.number_input(
+                f"{g}",
+                min_value=0, max_value=31,
+                value=int(st.session_state.get(f"gcap_{g}", GROUP_CAP[g])),
+                key=f"gcap_{g}"  # widget manages st.session_state["gcap_{g}"]
+            )
+    st.caption("Tip: per-doctor caps are set in the Doctors tab; group caps here are defaults when adding new doctors.")
 
 # ---------- Doctors tab ----------
 with tab_docs:
@@ -261,15 +264,18 @@ with tab_docs:
     txt = st.text_area(" ", height=120, key="add_list_box", placeholder="Dr. New A\nDr. New B")
     if st.button(L("append"), key="btn_append"):
         new_names = [n.strip() for n in txt.splitlines() if n.strip()]
+        added = 0
         for n in new_names:
             if n not in st.session_state.doctors:
                 st.session_state.doctors.append(n)
                 # default group g3
                 st.session_state.group_map[n] = "g3"
-                st.session_state.cap_map[n] = st.session_state.get("gcap_g3", GROUP_CAP["g3"])
+                default_cap = int(st.session_state.get("gcap_g3", GROUP_CAP["g3"]))
+                st.session_state.cap_map[n] = default_cap
                 st.session_state.allowed_shifts[n] = set(SHIFTS)
                 st.session_state.offdays[n] = set()
-        st.success(f"Added {len(new_names)}")
+                added += 1
+        st.success(f"Added {added}")
 
     st.divider()
     rem_col1, rem_col2 = st.columns([2,1])
@@ -290,7 +296,7 @@ with tab_docs:
                            key=f"group_{doc}")
         st.session_state.group_map[doc] = grp
         st.session_state.cap_map[doc] = st.number_input(L("cap"), 0, 31,
-                                                       value=int(st.session_state.cap_map.get(doc, GROUP_CAP.get(grp,18))),
+                                                       value=int(st.session_state.cap_map.get(doc, int(st.session_state.get(f"gcap_{grp}", GROUP_CAP.get(grp,18))))),
                                                        key=f"cap_{doc}")
 
         st.caption(L("allowed_shifts"))
@@ -359,6 +365,7 @@ def solve() -> SolveResult:
     for name in doctors:
         di = name_to_i[name]
         grp = st.session_state.group_map[name]
+        # allowed areas derive from group
         allowed_areas = GROUP_AREAS[grp]
         allowed_shifts = st.session_state.allowed_shifts[name] if st.session_state.allowed_shifts.get(name) else set(SHIFTS)
 
@@ -377,7 +384,7 @@ def solve() -> SolveResult:
         model.Add(total <= int(st.session_state.cap_map[name]))
         model.Add(total <= int(days - st.session_state.min_off))
 
-    # rest >=16h:
+    # rest >=16h (approx by forbidding adjacent patterns)
     MOR, EVE, NGT = 0, 1, 2
     for di in range(D):
         for t in range(1, days):
