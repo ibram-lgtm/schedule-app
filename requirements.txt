@@ -1,4 +1,4 @@
 streamlit
 pandas
-ortools
-openpyxl
+ortools-sat
+xlsxwriter
