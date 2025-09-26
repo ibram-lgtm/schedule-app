@@ -37,7 +37,7 @@ except Exception:
 st.set_page_config(page_title="Rota Matrix Pro", layout="wide")
 
 # -----------------------
-# تعريف هوّيات قياسية للفترات والأقسام + ترجمات
+# تعريف هويّات قياسية للفترات والأقسام + ترجمات
 # -----------------------
 DEFAULT_SHIFT_IDS = ["morning", "evening", "night"]
 DEFAULT_AREA_IDS  = ["triage", "resp", "obs", "icu"]
@@ -207,7 +207,7 @@ LANGS = {
     }
 }
 
-def T(key):  # ترجمة
+def T(key):
     lang = st.session_state.get("lang", "ar")
     return LANGS[lang][key]
 
@@ -218,7 +218,6 @@ def init_state():
     if "lang" not in st.session_state: st.session_state.lang = "ar"
     if "doctors" not in st.session_state: st.session_state.doctors = [f"طبيب {i+1}" for i in range(15)]
     if "doctor_prefs" not in st.session_state: st.session_state.doctor_prefs = {}  # name -> {cap, days_off:set, preferred:set(shift_ids), forbidden:set}
-    # هويات الفترات/الأقسام
     if "shift_ids" not in st.session_state: st.session_state.shift_ids = DEFAULT_SHIFT_IDS.copy()
     if "area_ids"  not in st.session_state: st.session_state.area_ids  = DEFAULT_AREA_IDS.copy()
     if "shift_labels" not in st.session_state: st.session_state.shift_labels = SHIFT_LABELS.copy()
@@ -228,7 +227,6 @@ def init_state():
     if "coverage" not in st.session_state:
         st.session_state.coverage = {"triage":2,"resp":1,"obs":4,"icu":3}
     if "overrides" not in st.session_state:
-        # overrides[name][day] = int code (index in SHIFT_AREA) أو -1 للراحة
         st.session_state.overrides = {}
 init_state()
 
@@ -247,24 +245,19 @@ def weekday_name(lang: str, y:int, m:int, d:int) -> str:
         return ""
     if lang == "ar":
         ar = ["الاثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت","الأحد"]
-        # calendar.weekday: Monday=0 .. Sunday=6
         return ar[wd]
     else:
         en = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
         return en[wd]
 
 def normalize_legacy_area(text: str) -> str:
-    # يحوّل "إنعاش/انعاش/Resuscitation" إلى id "icu" … إلخ
     text = text.strip()
-    # طابق بالعربية
     for aid, lbl in st.session_state.area_labels["ar"].items():
         if text == lbl: return aid
-    # إنجليزي
     for aid, lbl in st.session_state.area_labels["en"].items():
         if text.lower() == lbl.lower(): return aid
-    # اختلاف شائع
     if text in ("انعاش","إنعاش"): return "icu"
-    return text  # قد يكون id أصلاً
+    return text
 
 def normalize_legacy_shift(text: str) -> str:
     text = text.strip()
@@ -281,14 +274,13 @@ def normalize_state_coverage():
         aid = normalize_legacy_area(k)
         if aid == "REST": continue
         cov[aid] = int(v)
-    # أكّد وجود كل الأقسام المعروفة
     for aid in st.session_state.area_ids:
         cov.setdefault(aid, 0)
     st.session_state.coverage = cov
 normalize_state_coverage()
 
 # -----------------------
-# أنماط CSS (الألوان حسب shift_ids)
+# CSS
 # -----------------------
 def inject_css():
     css = "<style>"
@@ -314,7 +306,7 @@ def inject_css():
 inject_css()
 
 # -----------------------
-# واجهة الشريط الجانبي (إعدادات موحّدة)
+# الشريط الجانبي
 # -----------------------
 with st.sidebar:
     st.header(T("tab_schedule"))
@@ -342,13 +334,19 @@ with st.sidebar:
 
     engine = st.radio(T("engine"), [T("ga"), T("cpsat")], index=0)
     if engine == T("ga"):
-        gens = st.slider(T("gens"), 10, 500, 120)
-        pop  = st.slider(T("pop"), 10, 200, 40)
-        mut  = st.slider(T("mut"), 0.0, 0.2, 0.03, 0.01)
-        rest_bias = st.slider(T("rest_bias"), 0.0, 0.95, 0.6, 0.05)
+        gens = st.slider(T("gens"), 10, 500, st.session_state.get("gens", 120))
+        pop  = st.slider(T("pop"), 10, 200, st.session_state.get("pop", 40))
+        mut  = st.slider(T("mut"), 0.0, 0.2, st.session_state.get("mut", 0.03), 0.01)
+        rest_bias = st.slider(T("rest_bias"), 0.0, 0.95, st.session_state.get("rest_bias", 0.6), 0.05)
+        st.session_state['gens']=gens
+        st.session_state['pop']=pop
+        st.session_state['mut']=mut
+        st.session_state['rest_bias']=rest_bias
     else:
-        cp_limit   = st.slider("CP-SAT time limit (s)", 5, 300, 90)
-        cp_balance = st.checkbox("Balance load (objective)", True)
+        cp_limit   = st.slider("CP-SAT time limit (s)", 5, 300, st.session_state.get("cp_limit", 90))
+        cp_balance = st.checkbox("Balance load (objective)", st.session_state.get("cp_balance", True))
+        st.session_state['cp_limit']=cp_limit
+        st.session_state['cp_balance']=cp_balance
 
     # تخصيص (شفتات وألوان)
     with st.expander(T("customization")):
@@ -378,21 +376,19 @@ with st.sidebar:
         st.session_state.shift_colors["rest"] = st.color_picker(T("rest"), st.session_state.shift_colors.get("rest", "#F2F3F7"), key="c_rest")
 
 # -----------------------
-# تبويبات رئيسية
+# تبويبات
 # -----------------------
 tabs = st.tabs([T("tab_schedule"), T("tab_doctors"), T("tab_prefs"), T("tab_overrides"), T("tab_shiftview"), T("tab_export")])
 
-# ========== تبويب: الجدولة ==========
+# ========== الجدولة ==========
 with tabs[0]:
     st.subheader(T("tab_schedule"))
-
-    # مؤشرات
     k1, k2, k3 = st.columns(3)
     k1.metric(T("kpi_docs"), len(st.session_state.doctors))
     k2.metric(T("kpi_days"), days)
     k3.metric(T("kpi_ortools"), T("kpi_yes") if ORTOOLS_AVAILABLE else T("kpi_no"))
 
-# ========== تبويب: إدارة الأطباء ==========
+# ========== إدارة الأطباء ==========
 with tabs[1]:
     st.subheader(T("doctors_bulk"))
     pasted = st.text_area(T("paste_list"), height=160, placeholder="مثال:\nأحمد سعيد\nمحمد علي").strip()
@@ -425,7 +421,7 @@ with tabs[1]:
             else:
                 st.info("Exists.")
 
-# ========== تبويب: قيود الأطباء ==========
+# ========== قيود الأطباء ==========
 with tabs[2]:
     st.subheader(T("per_doc_prefs"))
     if not st.session_state.doctors:
@@ -439,15 +435,12 @@ with tabs[2]:
             days_off_txt = st.text_input(T("days_off"),
                                          ",".join(map(str, sorted(prefs["days_off"]))) if prefs["days_off"] else "")
         with colB:
-            # خيارات الفترات باللغة الحالية
             shift_opts = [st.session_state.shift_labels[st.session_state.lang][sid] for sid in st.session_state.shift_ids]
-            # تحويل مخزّن (shift_ids) إلى تسميات معروضة
             preferred_labels = [st.session_state.shift_labels[st.session_state.lang][sid] for sid in prefs["preferred"]] if prefs["preferred"] else []
             forbidden_labels = [st.session_state.shift_labels[st.session_state.lang][sid] for sid in prefs["forbidden"]] if prefs["forbidden"] else []
             pref_sel = st.multiselect(T("pref_shifts"), shift_opts, default=preferred_labels)
             ban_sel  = st.multiselect(T("ban_shifts"),  shift_opts, default=forbidden_labels)
         if st.button(T("apply_prefs")):
-            # رجّع من تسميات إلى ids
             label2id = {st.session_state.shift_labels[st.session_state.lang][sid]: sid for sid in st.session_state.shift_ids}
             st.session_state.doctor_prefs[target] = {
                 "cap": int(cap_doc) if cap_doc>0 else None,
@@ -457,7 +450,7 @@ with tabs[2]:
             }
             st.success("✔")
 
-# ========== تبويب: التخصيص اليدوي ==========
+# ========== التخصيص اليدوي ==========
 with tabs[3]:
     st.subheader(T("tab_overrides"))
     if not st.session_state.doctors:
@@ -466,14 +459,8 @@ with tabs[3]:
         doc_o = st.selectbox(T("select_doctor"), st.session_state.doctors, key="ov_doc")
         spec = st.text_area(T("manual_hint"), height=120, key="ov_spec")
 
-        # بناء قاموس تحويل من نص إلى id
         def parse_override_spec(txt:str) -> Dict[int, int]:
-            """
-            يُرجع {day: code} حيث code = index في SHIFT_AREA (أو -1 للراحة)
-            يقبل عربي/إنجليزي والتسميات الحالية، مثل: 1:صباح-فرز | 2:Rest | 3:Evening-Respiratory
-            """
             SHIFT_AREA = [(sid, aid) for sid in st.session_state.shift_ids for aid in st.session_state.area_ids]
-            # معاجم تسميات
             shift_map = {}
             area_map  = {}
             for sid in st.session_state.shift_ids:
@@ -500,10 +487,9 @@ with tabs[3]:
                 sh_txt, ar_txt = [x.strip() for x in rhs.split("-",1)]
                 sid = shift_map.get(sh_txt, normalize_legacy_shift(sh_txt))
                 aid = area_map.get(ar_txt, normalize_legacy_area(ar_txt))
-                if sid == "REST" or aid == "REST": 
+                if sid == "REST" or aid == "REST":
                     res[day_i] = -1
                     continue
-                # sid/aid قد يكونا id صحيحين
                 if sid in st.session_state.shift_ids and aid in st.session_state.area_ids:
                     code = SHIFT_AREA.index((sid, aid))
                     res[day_i] = code
@@ -528,7 +514,7 @@ class GAParams:
     days: int
     doctors: int
     per_doc_cap: int
-    coverage: Dict[str, int]  # per area_id
+    coverage: Dict[str, int]
     min_total: int
     max_total: int
     generations: int = 120
@@ -539,20 +525,18 @@ class GAParams:
     penalty_scale: float = 50.0
     max_consecutive: int = 6
     doc_caps: Optional[List[Optional[int]]] = None
-    preferred: Optional[List[set]] = None   # set of shift_ids
-    forbidden: Optional[List[set]] = None   # set of shift_ids
+    preferred: Optional[List[set]] = None
+    forbidden: Optional[List[set]] = None
 
 def build_locks(doctors: List[str], days_cnt:int) -> np.ndarray:
     locks = np.full((len(doctors), days_cnt), CODE_FREE, dtype=np.int16)
     SHIFT_AREA = SHIFT_AREA_LIST()
     name_to_i = {n:i for i,n in enumerate(doctors)}
-    # أيام غير متاح
     for name, p in st.session_state.doctor_prefs.items():
         if name not in name_to_i: continue
         i = name_to_i[name]
         for d in p.get("days_off", set()):
             if 1<=d<=days_cnt: locks[i, d-1] = CODE_REST
-    # Overrides
     for name, mp in st.session_state.overrides.items():
         if name not in name_to_i: continue
         i = name_to_i[name]
@@ -598,7 +582,6 @@ def ga_decode(genes:np.ndarray, days_cnt:int):
 def ga_fitness(genes:np.ndarray, p:GAParams) -> float:
     per_doc, totals_shift, totals_area = ga_decode(genes, p.days)
     pen = 0.0
-    # سقف الطبيب
     if p.doc_caps:
         for i, cap in enumerate(p.doc_caps):
             limit = cap if cap is not None else p.per_doc_cap
@@ -607,9 +590,8 @@ def ga_fitness(genes:np.ndarray, p:GAParams) -> float:
     else:
         over = np.clip(per_doc - p.per_doc_cap, 0, None).sum()
         pen += over * p.penalty_scale
-    # إجمالي/تغطية
     for day in range(p.days):
-        total_on_day = sum(totals_shift[(day, sid)] for sid in st.session_state.shift_ids)  # across shifts
+        total_on_day = sum(totals_shift[(day, sid)] for sid in st.session_state.shift_ids)
         if total_on_day < p.min_total: pen += (p.min_total - total_on_day) * p.penalty_scale
         if total_on_day > p.max_total: pen += (total_on_day - p.max_total) * p.penalty_scale
         for sid in st.session_state.shift_ids:
@@ -617,7 +599,6 @@ def ga_fitness(genes:np.ndarray, p:GAParams) -> float:
                 req = p.coverage.get(aid, 0)
                 ta = totals_area[(day, sid, aid)]
                 if ta < req: pen += (req - ta) * p.penalty_scale
-    # تفضيلات/ممنوعات
     SHIFT_AREA = SHIFT_AREA_LIST()
     for i in range(p.doctors):
         for day in range(p.days):
@@ -628,9 +609,7 @@ def ga_fitness(genes:np.ndarray, p:GAParams) -> float:
                     pen += p.penalty_scale * 6
                 if p.preferred and p.preferred[i] and sid not in p.preferred[i]:
                     pen += p.penalty_scale * 0.5
-    # توازن
     pen += float(np.var(per_doc.astype(np.float32))) * p.balance_weight
-    # قيد السلاسل
     D, T = genes.shape
     over_runs = 0
     for d in range(D):
@@ -692,23 +671,19 @@ def cpsat_schedule(doctors:List[str], days_cnt:int, cap:int, min_total:int, max_
                 for aid in area_ids:
                     x[(d, day, sid, aid)] = model.NewBoolVar(f"x_{d}_{day}_{sid}_{aid}")
 
-    # تغطيات وإجماليات
     for day in range(days_cnt):
         tot_all = []
         for sid in shift_ids:
             for aid in area_ids:
                 tot_all.append(sum(x[(d, day, sid, aid)] for d in range(D)))
-                # تغطية كل قسم
                 model.Add(sum(x[(d, day, sid, aid)] for d in range(D)) >= int(cov.get(aid, 0)))
         model.Add(sum(tot_all) >= int(min_total))
         model.Add(sum(tot_all) <= int(max_total))
 
-    # وردية واحدة/يوم/طبيب
     for day in range(days_cnt):
         for d in range(D):
             model.Add(sum(x[(d, day, sid, aid)] for sid in shift_ids for aid in area_ids) <= 1)
 
-    # أقفال
     SHIFT_AREA = SHIFT_AREA_LIST()
     for d in range(D):
         for day in range(days_cnt):
@@ -724,7 +699,6 @@ def cpsat_schedule(doctors:List[str], days_cnt:int, cap:int, min_total:int, max_
                         if (ss, aa) != (sid, aid):
                             model.Add(x[(d, day, ss, aa)] == 0)
 
-    # سقف الطبيب
     totals = {}
     for d in range(D):
         tot = sum(x[(d, day, sid, aid)] for day in range(days_cnt) for sid in shift_ids for aid in area_ids)
@@ -732,7 +706,6 @@ def cpsat_schedule(doctors:List[str], days_cnt:int, cap:int, min_total:int, max_
         model.Add(tot <= int(cap_d))
         totals[d] = tot
 
-    # قيد السلاسل
     y = {}
     for d in range(D):
         for day in range(days_cnt):
@@ -743,7 +716,6 @@ def cpsat_schedule(doctors:List[str], days_cnt:int, cap:int, min_total:int, max_
         for start in range(0, days_cnt - win + 1):
             model.Add(sum(y[(d, start+k)] for k in range(win)) <= max_consecutive)
 
-    # توازن (اختياري)
     if balance:
         approx = days_cnt * len(shift_ids) * ((min_total + max_total) / 2.0)
         target = int(round(approx / max(1, D)))
@@ -785,7 +757,6 @@ def df_from_genes(genes:np.ndarray, days_cnt:int, doctors:List[str]) -> pd.DataF
     return pd.DataFrame(rows)
 
 def to_matrix(df: pd.DataFrame, days_cnt:int, doctors:List[str]) -> pd.DataFrame:
-    # الإخراج: قيم = tuple(sid, aid) أو NaN (للراحة)
     if df is None or df.empty:
         return pd.DataFrame(index=doctors, columns=range(1, days_cnt+1))
     pvt = df.pivot_table(index="doctor", columns="day", values="pair", aggfunc="first")
@@ -799,7 +770,6 @@ def label_area(aid:str) -> str:
 
 def render_matrix(rota: pd.DataFrame, year:int, month:int):
     cols = rota.columns.tolist()
-    # header
     head_cells = [f"<th>{T('doctor')}</th>"]
     for d in cols:
         head_cells.append(
@@ -808,14 +778,12 @@ def render_matrix(rota: pd.DataFrame, year:int, month:int):
         )
     thead = "<thead><tr>" + "".join(head_cells) + "</tr></thead>"
 
-    # body
     body = []
     for doc in rota.index:
         tds = [f"<td class='doc'>{doc}</td>"]
         for d in cols:
             val = rota.loc[doc, d]
             if pd.isna(val):
-                # راحة = فارغ
                 inner = "<div class='cell'></div>"
             else:
                 sid, aid = val
@@ -838,15 +806,27 @@ def export_excel(rota: pd.DataFrame, year:int, month:int) -> bytes:
     import xlsxwriter
     wb = xlsxwriter.Workbook(output, {'in_memory': True})
     ws = wb.add_worksheet('Rota')
-    ws.right_to_left(st.session_state.lang=="ar")
+
+    # RTL compatibility across xlsxwriter versions:
+    if st.session_state.lang == "ar":
+        try:
+            ws.right_to_left()
+        except TypeError:
+            try:
+                ws.right_to_left(True)
+            except Exception:
+                pass
+        except AttributeError:
+            pass
+
     header_fmt = wb.add_format({'bold': True, 'align':'center', 'valign':'vcenter','text_wrap': True,'border':1})
-    doc_fmt = wb.add_format({'bold': True, 'align':'right' if st.session_state.lang=="ar" else 'left', 'valign':'vcenter','border':1})
+    doc_fmt = wb.add_format({'bold': True,'align':'right' if st.session_state.lang=="ar" else 'left','valign':'vcenter','border':1})
     rest_fmt = wb.add_format({'align':'center','valign':'vcenter','text_wrap':True,'border':1,
                               'fg_color': st.session_state.shift_colors.get("rest","#F2F3F7")})
-    # formats per shift
     shift_fmt = {sid: wb.add_format({'align':'center','valign':'vcenter','text_wrap':True,'border':1,
                                      'fg_color': st.session_state.shift_colors.get(sid, "#F0F0F0")})
                  for sid in st.session_state.shift_ids}
+
     ws.set_row(0, 38)
     ws.set_column(0, 0, 22)
     ws.set_column(1, rota.shape[1], 14)
@@ -854,17 +834,18 @@ def export_excel(rota: pd.DataFrame, year:int, month:int) -> bytes:
     for j, day in enumerate(rota.columns, start=1):
         title = f"{weekday_name(st.session_state.lang, int(year), int(month), int(day))}\n{int(day)}/{int(month)}"
         ws.write(0, j, title, header_fmt)
-    for i, doc in enumerate(rota.index, start=1):
+
+    for i, doc_name in enumerate(rota.index, start=1):
         ws.set_row(i, 34)
-        ws.write(i, 0, doc, doc_fmt)
+        ws.write(i, 0, doc_name, doc_fmt)
         for j, day in enumerate(rota.columns, start=1):
-            val = rota.loc[doc, day]
+            val = rota.loc[doc_name, day]
             if pd.isna(val):
-                ws.write(i, j, "", rest_fmt)  # فارغ
+                ws.write(i, j, "", rest_fmt)  # راحة = فارغ
             else:
                 sid, aid = val
-                text = f"{label_shift(sid)}\n{label_area(aid)}"
-                ws.write(i, j, text, shift_fmt.get(sid, rest_fmt))
+                txt = f"{label_shift(sid)}\n{label_area(aid)}"
+                ws.write(i, j, txt, shift_fmt.get(sid, rest_fmt))
     ws.freeze_panes(1, 1)
     wb.close()
     return output.getvalue()
@@ -881,7 +862,7 @@ def export_pdf(rota: pd.DataFrame, year:int, month:int) -> bytes:
         for d in rota.columns:
             val = rota.loc[doc_name, d]
             if pd.isna(val):
-                row.append("")  # فارغ
+                row.append("")
             else:
                 sid, aid = val
                 row.append(f"{label_shift(sid)}\n{label_area(aid)}")
@@ -896,7 +877,6 @@ def export_pdf(rota: pd.DataFrame, year:int, month:int) -> bytes:
         ('GRID', (0,0), (-1,-1), 0.3, colors.grey),
         ('BACKGROUND', (0,0), (-1,0), colors.whitesmoke),
     ])
-    # تلوين الخلايا حسب الشفت
     for r in range(1, len(data)):
         for c in range(1, len(header)):
             v = data[r][c]
@@ -904,7 +884,6 @@ def export_pdf(rota: pd.DataFrame, year:int, month:int) -> bytes:
                 ts.add('BACKGROUND', (c, r), (c, r), colors.HexColor(st.session_state.shift_colors.get("rest","#F2F3F7")))
             else:
                 sh = v.split("\n",1)[0]
-                # اعكس من تسمية إلى id
                 sid = None
                 for _sid in st.session_state.shift_ids:
                     if sh in (st.session_state.shift_labels["ar"][_sid], st.session_state.shift_labels["en"][_sid]):
@@ -916,7 +895,7 @@ def export_pdf(rota: pd.DataFrame, year:int, month:int) -> bytes:
     return output.getvalue()
 
 # -----------------------
-# توليد الجدول
+# توليد الجدول + عرض
 # -----------------------
 result_df = None
 method_used = None
@@ -924,10 +903,8 @@ method_used = None
 with tabs[0]:
     if st.button(T("generate"), use_container_width=True):
         doctors = st.session_state.doctors
-        SHIFT_AREA = SHIFT_AREA_LIST()
         locks = build_locks(doctors, days)
 
-        # per-doctor caps & prefs
         caps, preferred, forbidden = [], [], []
         for name in doctors:
             p = st.session_state.doctor_prefs.get(name, {})
@@ -939,10 +916,8 @@ with tabs[0]:
             with st.spinner("AI scheduling..."):
                 gp = GAParams(days=days, doctors=len(doctors), per_doc_cap=per_doc_cap,
                               coverage=st.session_state.coverage, min_total=min_total, max_total=max_total,
-                              generations=st.session_state.get("gens", 120) if 'gens' in st.session_state else 120,
-                              population_size=st.session_state.get("pop", 40) if 'pop' in st.session_state else 40,
-                              mutation_rate=st.session_state.get("mut", 0.03) if 'mut' in st.session_state else 0.03,
-                              rest_bias=st.session_state.get("rest_bias", 0.6) if 'rest_bias' in st.session_state else 0.6,
+                              generations=st.session_state['gens'], population_size=st.session_state['pop'],
+                              mutation_rate=st.session_state['mut'], rest_bias=st.session_state['rest_bias'],
                               max_consecutive=max_consecutive, doc_caps=caps, preferred=preferred, forbidden=forbidden)
                 prog = st.progress(0.0, text="Optimizing…")
                 genes = ga_evolve(gp, locks=locks, progress=prog)
@@ -957,7 +932,7 @@ with tabs[0]:
                     result_df, status = cpsat_schedule(
                         doctors=doctors, days_cnt=days, cap=per_doc_cap,
                         min_total=min_total, max_total=max_total,
-                        cov=st.session_state.coverage, time_limit=cp_limit, balance=cp_balance,
+                        cov=st.session_state.coverage, time_limit=st.session_state['cp_limit'], balance=st.session_state['cp_balance'],
                         max_consecutive=max_consecutive, locks=locks, per_doc_caps=caps
                     )
                     if result_df is None or result_df.empty:
@@ -966,7 +941,6 @@ with tabs[0]:
                         method_used = f"CP-SAT ({status})"
                         st.success(f"{T('cpsat_ok')} {method_used}")
 
-    # عرض النتيجة
     if "last_result_df" in st.session_state or (result_df is not None and not result_df.empty):
         if result_df is not None and not result_df.empty:
             st.session_state.last_result_df = result_df.copy()
@@ -978,7 +952,7 @@ with tabs[0]:
     else:
         st.info(T("info_first"))
 
-# ========== تبويب: عرض حسب الوردية ==========
+# ========== عرض حسب الوردية ==========
 with tabs[4]:
     st.subheader(T("tab_shiftview"))
     out_df = st.session_state.get("last_result_df", None)
@@ -986,13 +960,11 @@ with tabs[4]:
         st.info(T("info_first"))
     else:
         day_sel = st.number_input(T("choose_day"), 1, days, 1)
-        # اختيارات باللغة الحالية
         shift_opts = [st.session_state.shift_labels[st.session_state.lang][sid] for sid in st.session_state.shift_ids]
         area_opts  = [st.session_state.area_labels[st.session_state.lang][aid]  for aid in st.session_state.area_ids]
         col1, col2 = st.columns(2)
         with col1: shift_lbl = st.selectbox(T("choose_shift"), shift_opts)
         with col2: area_lbl  = st.selectbox(T("choose_area"), area_opts)
-        # ترجمة إلى ids
         sid = [s for s in st.session_state.shift_ids if st.session_state.shift_labels[st.session_state.lang][s]==shift_lbl][0]
         aid = [a for a in st.session_state.area_ids if st.session_state.area_labels[st.session_state.lang][a]==area_lbl][0]
         mask = (out_df["day"] == int(day_sel)) & (out_df["pair"].apply(lambda p: p==(sid, aid)))
@@ -1000,7 +972,7 @@ with tabs[4]:
         st.write(T("doctors_in_shift"))
         st.write(", ".join(names) if names else "—")
 
-# ========== تبويب: التصدير ==========
+# ========== التصدير ==========
 with tabs[5]:
     st.subheader(T("tab_export"))
     out_df = st.session_state.get("last_result_df", None)
