@@ -1,13 +1,9 @@
-# app.py — ED Rota Pro (Colors Templates + Workload Balancer + Advanced Constraints + PDF/Excel Export)
-# ---------------------------------------------------------------------------------------------------
+# app.py — ED Rota Pro (Calendar Offdays + Dark Mode Fix + All Previous Features)
+# ------------------------------------------------------------------------------
 # الجديد:
-# - قوالب ألوان: "هادئة" و"عالية التباين" + تخصيص يدوي لكل منطقة + زر استعادة الافتراضي.
-# - موازن عبء العمل: يملأ النواقص بعد التوليد العشوائي باختيار الأطباء ذوي السعة المتبقية،
-#   مع تفضيل الأقل عملاً في عطلة نهاية الأسبوع (Fri/Sat)، واحترام جميع القيود.
-# - قيود متقدمة: حد ليلي شهري/طبيب (max_night_per_doc)، حد أسبوعي/طبيب (max_weekly_per_doc),
-#   تفضيل العطل (لا يعمل في أيام العطل المحددة إن فُعّل).
-# - تصدير PDF ملوّن (ReportLab إن توفر)، بالإضافة لـ Excel المنسّق.
-# - كل العروض والجداول والألوان ثنائية اللغة عربي/إنجليزي.
+# - تقويم لإجازات الطبيب (داخل تبويب الأطباء): اختر حتى 3 أيام إجازة بالشهر عبر شبكة أسبوعية.
+# - تحسين الوضع الليلي: الجداول والبادجات تصبح ذات تباين مناسب في الداكن، والنص واضح دائمًا.
+# - يحتفظ بكل الميزات السابقة: القوالب اللونية، الموازن، القيود المتقدمة، التحرير داخل الجدول، تصدير Excel/PDF.
 
 import streamlit as st
 import pandas as pd
@@ -15,7 +11,7 @@ import random
 from io import BytesIO
 from typing import Dict, List, Tuple
 import calendar, html
-from datetime import datetime, date
+from datetime import date
 
 # Optional deps
 try:
@@ -84,7 +80,7 @@ I18N = {
         "group": "المجموعة",
         "cap": "السقف الشهري (عدد الشفتات)",
         "allowed_shifts": "الفترات المسموح بها",
-        "offdays": "أيام الإجازة (حتى 3، مفصولة بفواصل)",
+        "offdays": "أيام الإجازة (حتى 3 أيام)",
         "rules_global": "قواعد عامة",
         "min_off": "أقل عدد أيام إجازة/شهر",
         "max_consec": "أقصى أيام عمل متتالية",
@@ -112,6 +108,8 @@ I18N = {
         "required": "المطلوب",
         "ok": "مكتمل",
         "short": "نقص",
+        "off_calendar": "اختر أيام الإجازة لهذا الطبيب (حد أقصى 3)",
+        "clear_off": "مسح الإجازات",
     },
     "en": {
         "general": "General",
@@ -160,7 +158,7 @@ I18N = {
         "group": "Group",
         "cap": "Monthly cap (shifts)",
         "allowed_shifts": "Allowed shifts",
-        "offdays": "Off-days (up to 3, comma-separated)",
+        "offdays": "Off-days (up to 3)",
         "rules_global": "Global rules",
         "min_off": "Min off-days / month",
         "max_consec": "Max consecutive duty days",
@@ -188,6 +186,8 @@ I18N = {
         "required": "Required",
         "ok": "OK",
         "short": "Short",
+        "off_calendar": "Pick off-days for this doctor (max 3)",
+        "clear_off": "Clear off-days",
     }
 }
 def L(k): return I18N[st.session_state.get("lang","en")][k]
@@ -210,22 +210,15 @@ LETTER_TO_AREA = {"F":"fast","R":"resp_triage","A":"acute","C":"resus"}
 SHIFT_COLS_ORDER = ["F1","F2","F3","R1","R2","R3","A1","A2","A3","C1","C2","C3"]
 def code_for(area,shift): return f"{AREA_CODE[area]}{SHIFT_CODE[shift]}"
 
-# Shift times for rest rule (hours)
+# ===== Colors & Templates =====
+PALETTE = {"yellow":"#FFF7C2","green":"#E7F7E9","blue":"#E6F3FF","red":"#FDEAEA"}
+DEFAULT_AREA_COLOR_NAMES = {"fast":"yellow","resp_triage":"green","acute":"blue","resus":"red"}
+TEMPLATES = {"calm": {"fast":"yellow","resp_triage":"green","acute":"blue","resus":"red"},
+             "contrast": {"fast":"red","resp_triage":"blue","acute":"yellow","resus":"green"}}
+
+# ===== Shift times for rest rule =====
 SHIFT_START = {"morning":7, "evening":15, "night":23}
 SHIFT_END   = {"morning":15,"evening":23,"night":7}
-
-# ===== Color palette & templates =====
-PALETTE = {
-    "yellow": "#FFF7C2",
-    "green":  "#E7F7E9",
-    "blue":   "#E6F3FF",
-    "red":    "#FDEAEA",
-}
-DEFAULT_AREA_COLOR_NAMES = {"fast":"yellow","resp_triage":"green","acute":"blue","resus":"red"}
-TEMPLATES = {
-    "calm": {"fast":"yellow","resp_triage":"green","acute":"blue","resus":"red"},
-    "contrast": {"fast":"red","resp_triage":"blue","acute":"yellow","resus":"green"},
-}
 
 # ===== State =====
 def _init_session():
@@ -240,7 +233,6 @@ def _init_session():
         ("acute","morning"):3, ("acute","evening"):4, ("acute","night"):3,
         ("resus","morning"):3, ("resus","evening"):3, ("resus","night"):3,
     }
-    # Doctors/groups defaults (shortened here for brevity—أضف/عدّل كما يلزمك)
     if "group_map" not in ss:
         ss.group_map = {
             # seniors
@@ -276,7 +268,6 @@ def _init_session():
     if "min_off" not in ss: ss.min_off = 12
     if "max_consec" not in ss: ss.max_consec = 6
     if "min_rest" not in ss: ss.min_rest = 16
-    # Advanced constraints maps
     if "max_night_map" not in ss: ss.max_night_map = {n: 6 for n in ss.doctors}
     if "max_week_map" not in ss: ss.max_week_map = {n: 5 for n in ss.doctors}
     if "avoid_holidays_map" not in ss: ss.avoid_holidays_map = {n: False for n in ss.doctors}
@@ -285,7 +276,6 @@ def _init_session():
     if "gaps" not in ss: ss.gaps = pd.DataFrame()
     if "remain" not in ss: ss.remain = pd.DataFrame()
     if "view_mode" not in ss: ss.view_mode = "day_doctor"
-    # area colors (by name + hex)
     if "area_color_names" not in ss:
         ss.area_color_names = DEFAULT_AREA_COLOR_NAMES.copy()
     if "area_colors" not in ss:
@@ -294,8 +284,7 @@ _init_session()
 
 def LBL_AREA(a): return AREA_LABEL[st.session_state.lang][a]
 def LBL_SHIFT(s): return SHIFT_LABEL[st.session_state.lang][s]
-def area_color(area: str) -> str:
-    return st.session_state.area_colors.get(area, "#ffffff")
+def area_color(area: str) -> str: return st.session_state.area_colors.get(area, "#ffffff")
 
 # ===== Utilities =====
 def weekday_name(y:int, m:int, d:int) -> str:
@@ -320,13 +309,9 @@ def constraints_ok(name:str, day:int, area:str, shift:str,
                    assigned_map:Dict[Tuple[str,int],Tuple[str,str]],
                    counts:Dict[str,int]) -> Tuple[bool,str]:
     ss = st.session_state
-    # offdays & holidays preference
-    if day in ss.offdays.get(name,set()):
-        return False, "off-day"
-    if ss.avoid_holidays_map.get(name, False) and (day in ss.holidays):
-        return False, "holiday preference"
+    if day in ss.offdays.get(name,set()): return False, "off-day"
+    if ss.avoid_holidays_map.get(name, False) and (day in ss.holidays): return False, "holiday preference"
 
-    # allowed area by group
     GROUP_AREAS = {
         "senior":{"resus"},
         "g1":{"resp_triage"},
@@ -336,23 +321,14 @@ def constraints_ok(name:str, day:int, area:str, shift:str,
         "g5":{"acute","resus"},
     }
     grp = ss.group_map[name]
-    if area not in GROUP_AREAS[grp]:
-        return False, "area not allowed"
+    if area not in GROUP_AREAS[grp]: return False, "area not allowed"
+    if shift not in ss.allowed_shifts.get(name,set(SHIFTS)): return False, "shift not allowed"
+    if (name, day) in assigned_map: return False, "already assigned"
 
-    # allowed shifts per doctor
-    if shift not in ss.allowed_shifts.get(name,set(SHIFTS)):
-        return False, "shift not allowed"
-
-    # single slot per day
-    if (name, day) in assigned_map:
-        return False, "already assigned"
-
-    # cap & min off
     cap = int(ss.cap_map[name]); taken = counts.get(name,0)
     if taken >= cap: return False, "cap reached"
     if taken >= (ss.days - ss.min_off): return False, "min off-days"
 
-    # advanced: max night/month
     if shift == "night":
         night_taken = 0
         for (n,d),(_,sh) in assigned_map.items():
@@ -360,16 +336,13 @@ def constraints_ok(name:str, day:int, area:str, shift:str,
         if night_taken >= int(ss.max_night_map.get(name, 999)):
             return False, "max night reached"
 
-    # advanced: weekly limit
     week = iso_week(int(ss.year), int(ss.month), int(day))
     w_count = 0
     for (n,d),(_,sh) in assigned_map.items():
         if n==name and iso_week(int(ss.year), int(ss.month), int(d)) == week:
             w_count += 1
-    if w_count >= int(ss.max_week_map.get(name, 999)):
-        return False, "weekly limit"
+    if w_count >= int(ss.max_week_map.get(name, 999)): return False, "weekly limit"
 
-    # strict rest rule
     if ss.min_rest > 0:
         prev = assigned_map.get((name, day-1))
         if prev:
@@ -385,15 +358,12 @@ def constraints_ok(name:str, day:int, area:str, shift:str,
             if rest2 < 0: rest2 += 24
             if rest2 < int(ss.min_rest): return False, "rest (today→next)"
 
-    # ≤ max consecutive days
     streak = 0; t = day-1
     while t>=1 and ((name,t) in assigned_map):
         streak += 1; t -= 1
     if streak+1 > int(ss.max_consec): return False, "max consecutive days"
-
     return True, "ok"
 
-# ===== Recompute helper =====
 def recompute_tables(df: pd.DataFrame):
     days = st.session_state.days
     cnt = {(t,s,a):0 for t in range(days) for s,_ in enumerate(SHIFTS) for a,_ in enumerate(AREAS)}
@@ -418,7 +388,6 @@ def recompute_tables(df: pd.DataFrame):
     st.session_state.gaps = gaps
     st.session_state.remain = remain
 
-# ===== Random generator =====
 def random_generate():
     try:
         if st.session_state.get("seed_input_txt",""):
@@ -447,19 +416,15 @@ def random_generate():
             ok, _ = constraints_ok(name, day, area, shift, assigned_map, counts)
             if ok:
                 candidates.append(name)
-        # تفضيل الأقل شغلًا في الويكند
         if candidates:
-            # sort by (assigned so far, weekend count at that day, remaining capacity desc)
             def score(nm):
                 assigned = counts.get(nm,0)
-                # weekend penalization if already many weekend duties
                 wk_cnt = 0
                 for (n,d),(a,s) in assigned_map.items():
                     if n==nm and is_weekend(int(st.session_state.year), int(st.session_state.month), int(d)):
                         wk_cnt += 1
                 remaining = int(st.session_state.cap_map[nm]) - assigned
                 return (assigned, wk_cnt, -remaining)
-
             candidates.sort(key=score)
             pick = candidates[0]
             assigned_map[(pick, day)] = (area, shift)
@@ -472,39 +437,30 @@ def random_generate():
     recompute_tables(df)
     st.warning(L("no_solution_warn"))
 
-# ===== Workload balancer (fill gaps) =====
 def balance_workload():
     if st.session_state.result_df.empty or st.session_state.gaps.empty:
         return
     df = st.session_state.result_df.copy()
     assigned_map = {(r.doctor, int(r.day)):(r.area, r.shift) for r in df.itertuples(index=False)}
     counts = df.groupby("doctor").size().to_dict()
-    # sort gaps by largest shortage first
     gaps_sorted = st.session_state.gaps.sort_values(["short_by","day"], ascending=[False, True])
     for row in gaps_sorted.itertuples(index=False):
         need = int(row.short_by); day = int(row.day); area = row.area; shift = row.shift
         for _ in range(need):
-            # build candidate list
             cands = []
             for nm in st.session_state.doctors:
                 ok, _msg = constraints_ok(nm, day, area, shift, assigned_map, counts)
                 if ok:
-                    # remaining capacity
                     rem = int(st.session_state.cap_map[nm]) - counts.get(nm,0)
-                    # weekend count so far
                     wk = 0
+                    night_cnt = 0
                     for (n,d),(a,s) in assigned_map.items():
                         if n==nm and is_weekend(int(st.session_state.year), int(st.session_state.month), int(d)):
                             wk += 1
-                    # night count so far
-                    night_cnt = 0
-                    for (n,d),(a,s) in assigned_map.items():
                         if n==nm and s=="night":
                             night_cnt += 1
                     cands.append((nm, rem, wk, night_cnt))
-            if not cands:
-                break
-            # Prefer highest remaining, then fewer weekend duties, then fewer nights
+            if not cands: break
             cands.sort(key=lambda x: (-x[1], x[2], x[3], x[0]))
             pick = cands[0][0]
             assigned_map[(pick, day)] = (area, shift)
@@ -544,8 +500,7 @@ def day_shift_map(df: pd.DataFrame, days:int) -> Dict[int, Dict[str, List[str]]]
 def daily_counts(df: pd.DataFrame, days:int) -> Dict[int, Dict[str, Tuple[int,int,int]]]:
     res = {d:{c:(0,0,0) for c in SHIFT_COLS_ORDER} for d in range(1, days+1)}
     ct = df.groupby(["day","code"]).size().to_dict() if not df.empty else {}
-    req_map = {code_for(a,s): int(st.session_state.cov[(a,s)])
-               for a in AREAS for s in SHIFTS}
+    req_map = {code_for(a,s): int(st.session_state.cov[(a,s)]) for a in AREAS for s in SHIFTS}
     for d in range(1, days+1):
         for c in SHIFT_COLS_ORDER:
             a = ct.get((d,c), 0); r = req_map[c]
@@ -566,24 +521,45 @@ def area_totals_from_daily_counts(dc: Dict[int, Dict[str, Tuple[int,int,int]]]) 
             out[d][area] = (A, R, short)
     return out
 
-# ---------- CSS / Tables ----------
+# ---------- THEME-AWARE CSS ----------
 def inject_css():
     css = """
     <style>
-      .wrap { overflow:auto; max-height: 74vh; border:1px solid #e6e8ef; border-radius:14px; background:#fff; }
-      table.tbl { border-collapse: separate; border-spacing:0; width: 100%; min-width: 900px; }
-      table.tbl th, table.tbl td { border:1px solid #e6e8ef; padding:6px 8px; vertical-align:middle; }
-      table.tbl thead th { position:sticky; top:0; background:#f8f9fe; z-index:2; text-align:center; font-weight:700; }
-      table.tbl tbody th.sticky { position:sticky; left:0; background:#fff; z-index:1; white-space:nowrap; font-weight:700; }
+      :root {
+        --text: #111827;
+        --bg: #ffffff;
+        --card-bg: #ffffff;
+        --thead-bg: #f8f9fe;
+        --border: #e6e8ef;
+        --badge-text: #111111; /* تأكيد وضوح النص داخل البادج */
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --text: #e5e7eb;
+          --bg: #0f172a;
+          --card-bg: #111827;
+          --thead-bg: #1f2937;
+          --border: #374151;
+          --badge-text: #111111; /* نُبقي النص غامقًا على الباستيل */
+        }
+      }
+      .wrap { overflow:auto; max-height: 74vh; border:1px solid var(--border); border-radius:14px; background:var(--card-bg); }
+      table.tbl { border-collapse: separate; border-spacing:0; width: 100%; min-width: 900px; color: var(--text); }
+      table.tbl th, table.tbl td { border:1px solid var(--border); padding:6px 8px; vertical-align:middle; }
+      table.tbl thead th { position:sticky; top:0; background:var(--thead-bg); z-index:2; text-align:center; font-weight:700; }
+      table.tbl tbody th.sticky { position:sticky; left:0; background:var(--card-bg); z-index:1; white-space:nowrap; font-weight:700; }
       .cell { display:flex; align-items:center; justify-content:center; min-height:40px; }
-      .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; border:1px solid #e6e8ef; }
+      .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; border:1px solid var(--border); color: var(--badge-text); }
       .ok    { background:#E7F7E9; color:#14532d; }
       .short { background:#FDEAEA; color:#7f1d1d; }
-      .sub { font-size:11px; font-weight:500; color:#6b7280; }
+      .sub { font-size:11px; font-weight:500; opacity:.85; }
+      .cal-box { border:1px solid var(--border); border-radius:12px; padding:8px; background:var(--card-bg); }
+      .cal-day { text-align:center; font-size:12px; opacity:.8; }
     </style>
     """
     st.markdown(css, unsafe_allow_html=True)
 
+# ---------- Renderers ----------
 def render_day_doctor_cards(sheet: pd.DataFrame, year:int, month:int, doctors:List[str]):
     inject_css()
     head = ["<th>"+html.escape(L("day"))+"</th>"] + [f"<th>{html.escape(doc)}</th>" for doc in doctors]
@@ -672,6 +648,63 @@ def render_daily_area_table(area_totals: Dict[int, Dict[str, Tuple[int,int,int]]
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
     st.markdown(f"<div class='wrap'><table class='tbl'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
 
+# ---------- Calendar Offday Picker ----------
+def render_offday_calendar(doc: str):
+    inject_css()
+    st.caption(L("off_calendar"))
+    y = int(st.session_state.year); m = int(st.session_state.month)
+    cal = calendar.Calendar(firstweekday=0)  # Monday
+    weeks = cal.monthdayscalendar(y, m)      # list of weeks; 0 for padding days
+    selected = set(st.session_state.offdays.get(doc, set()))
+    max_days = int(st.session_state.days)
+
+    # عنوان الأيام
+    head_cols = st.columns(7)
+    day_names = I18N[st.session_state.lang]["weekday"]
+    for i, col in enumerate(head_cols):
+        col.markdown(f"<div class='cal-day'><b>{html.escape(day_names[i])}</b></div>", unsafe_allow_html=True)
+
+    # الشبكة
+    for w in weeks:
+        cols = st.columns(7)
+        for i, d in enumerate(w):
+            with cols[i]:
+                if d == 0 or d > max_days:
+                    st.markdown("&nbsp;")
+                else:
+                    key = f"off_{doc}_{y}_{m}_{d}"
+                    default_val = d in selected
+                    val = st.checkbox(str(d), value=default_val, key=key)
+                    if val:
+                        selected.add(d)
+                    else:
+                        selected.discard(d)
+
+    # فرض الحد 3
+    if len(selected) > 3:
+        keep = set(sorted(selected)[:3])
+        # إطفاء المفاتيح الزائدة بصمت
+        for d in selected - keep:
+            k = f"off_{doc}_{y}_{m}_{d}"
+            if k in st.session_state:
+                st.session_state[k] = False
+        selected = keep
+        st.warning("Max 3 off-days per month.")
+
+    # حفظ
+    st.session_state.offdays[doc] = selected
+    c1, c2 = st.columns(2)
+    with c2:
+        if st.button(L("clear_off"), key=f"clear_off_{doc}"):
+            # امسح جميع الإشارات
+            for w in weeks:
+                for d in w:
+                    if d and d <= max_days:
+                        k = f"off_{doc}_{y}_{m}_{d}"
+                        if k in st.session_state: st.session_state[k] = False
+            st.session_state.offdays[doc] = set()
+            st.experimental_rerun()
+
 # ---------- Inline editor ----------
 ALL_CODES = [""] + SHIFT_COLS_ORDER
 def parse_code(code: str) -> Tuple[str,str]:
@@ -696,12 +729,11 @@ def apply_inline_changes(grid_new: pd.DataFrame, validate: bool, force: bool):
             if (doc, day) in assigned_map:
                 old_code = code_for(*assigned_map[(doc,day)])
             if new_code == old_code: continue
-            # remove existing
             if (doc, day) in assigned_map:
                 counts[doc] = max(0, counts.get(doc,0) - 1)
                 assigned_map.pop((doc, day), None)
                 df_old = df_old[~((df_old["doctor"]==doc) & (df_old["day"]==day))]
-            if new_code == "" or len(new_code)<2: continue  # cleared
+            if new_code == "" or len(new_code)<2: continue
             area, shift = parse_code(new_code)
             if area=="" or shift=="":
                 invalid.append((doc, day, new_code, "bad code"))
@@ -711,7 +743,6 @@ def apply_inline_changes(grid_new: pd.DataFrame, validate: bool, force: bool):
                     if not ok:
                         invalid.append((doc, day, new_code, msg))
                         continue
-                # apply
                 assigned_map[(doc, day)] = (area, shift)
                 counts[doc] = counts.get(doc,0) + 1
                 df_old = pd.concat([df_old, pd.DataFrame([{
@@ -775,11 +806,9 @@ with tab_rules:
             )
     st.caption("Per-doctor caps are set below; these are defaults for new doctors.")
 
-    # Advanced constraints (global inputs per doctor defaults)
     st.subheader(L("adv_rules"))
     c1, c2, c3 = st.columns(3)
     with c1:
-        # displayed as info—actual editing per-doctor in Doctors tab
         st.caption(L("max_night") + " — per doctor (edit in Doctors tab)")
     with c2:
         st.caption(L("max_week") + " — per doctor (edit in Doctors tab)")
@@ -798,15 +827,13 @@ with tab_rules:
     tcol1, tcol2 = st.columns([2,1])
     with tcol1:
         st.caption(L("templates"))
-        tpl = st.selectbox(" ", [L("calm"), L("contrast")],
-                           index=0, key="tpl_select")
-        # map localized
+        tpl = st.selectbox(" ", [L("calm"), L("contrast")], index=0, key="tpl_select")
         inv_tpl = {I18N["ar"]["calm"]:"calm", I18N["ar"]["contrast"]:"contrast",
                    I18N["en"]["calm"]:"calm", I18N["en"]["contrast"]:"contrast"}
         if st.button(L("apply_template"), key="btn_apply_tpl"):
             sel_key = inv_tpl[tpl]
             st.session_state.area_color_names = TEMPLATES[sel_key].copy()
-            st.session_state.area_colors = {a: {"yellow":"#FFF7C2", "green":"#E7F7E9", "blue":"#E6F3FF", "red":"#FDEAEA"}[st.session_state.area_color_names[a]] for a in AREAS}
+            st.session_state.area_colors = {a: PALETTE[st.session_state.area_color_names[a]] for a in AREAS}
             st.success("Template applied.")
     with tcol2:
         if st.button(L("reset_colors"), use_container_width=True, key="btn_reset_colors"):
@@ -868,7 +895,6 @@ with tab_docs:
         st.session_state.cap_map[doc] = st.number_input(L("cap"), 0, 31,
                                                        value=int(st.session_state.cap_map.get(doc, int(st.session_state.get(f"gcap_{grp}", 18)))),
                                                        key=f"cap_{doc}")
-
         ch0, ch1, ch2 = st.columns(3)
         checks = {}
         for i, sh in enumerate(SHIFTS):
@@ -879,17 +905,9 @@ with tab_docs:
                                          key=f"allow_{doc}_{sh}")
         st.session_state.allowed_shifts[doc] = {s for s,v in checks.items() if v} or set(SHIFTS)
 
-        st.caption(L("offdays"))
-        off_txt = st.text_input(" ", ",".join(map(str, sorted(st.session_state.offdays.get(doc,set())))), key=f"off_{doc}")
-        chosen = set()
-        for t in off_txt.replace(" ", "").split(","):
-            if t.isdigit():
-                d = int(t)
-                if 1 <= d <= st.session_state.days:
-                    chosen.add(d)
-        if len(chosen) > 3:
-            chosen = set(sorted(list(chosen))[:3])
-        st.session_state.offdays[doc] = chosen
+        # --- Calendar Offdays (NEW) ---
+        st.markdown(f"**{L('offdays')}**")
+        render_offday_calendar(doc)
 
         # Advanced per-doctor
         st.markdown(f"**{L('adv_rules')}**")
@@ -915,19 +933,16 @@ with tab_gen:
             random_generate()
     with row1[1]:
         if st.button(L("balance"), key="balance_btn", use_container_width=True):
-            balance_workload()
-            st.success(L("balanced_ok"))
+            balance_workload(); st.success(L("balanced_ok"))
 
     if st.session_state.result_df.empty:
         st.info(L("need_generate"))
     else:
-        # Build views
         sheet = sheet_day_doctor(st.session_state.result_df, st.session_state.days, st.session_state.doctors)
         dmap  = day_shift_map(st.session_state.result_df, st.session_state.days)
         dcnts = daily_counts(st.session_state.result_df, st.session_state.days)
         atot  = area_totals_from_daily_counts(dcnts)
 
-        # View selector
         vlabels = {"day_doctor": L("view_day_doctor"), "doctor_day": L("view_doctor_day"), "day_shift": L("view_day_shift")}
         mode = st.radio(L("view_mode"),
                         [vlabels["day_doctor"], vlabels["doctor_day"], vlabels["day_shift"]],
@@ -949,7 +964,6 @@ with tab_gen:
         render_daily_area_table(atot, int(st.session_state.year), int(st.session_state.month))
 
         st.divider()
-        # Inline editor (Doctor×Day grid)
         st.markdown(f"**{L('inline_edit')}**")
         st.caption(L("inline_hint"))
         base_grid = grid_doctor_day(st.session_state.result_df, st.session_state.days, st.session_state.doctors)
@@ -1005,7 +1019,6 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
         "resus": wb.add_format({"align":"center","valign":"vcenter","border":1,"bg_color": st.session_state.area_colors["resus"]}),
     }
 
-    # Sheet 1 — Rota (Day×Doctor)
     ws = wb.add_worksheet("Rota")
     ws.freeze_panes(1,1)
     ws.set_column(0, 0, 14)
@@ -1027,7 +1040,6 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
                 fmt = area_fmt.get(area, cell)
                 ws.write(i,j, code, fmt)
 
-    # Sheet 2 — Doctor×Day
     wsD = wb.add_worksheet("Doctor×Day")
     wsD.freeze_panes(1,1)
     wsD.set_column(0, 0, 24)
@@ -1050,7 +1062,6 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
                 fmt = area_fmt.get(area, cell)
                 wsD.write(i,j, code, fmt)
 
-    # Sheet 3 — Coverage gaps
     ws2 = wb.add_worksheet("Coverage gaps")
     cols = ["day","shift","area","abbr","required","assigned","short_by"]
     for j,cname in enumerate(cols): ws2.write(0,j,cname,hdr)
@@ -1058,7 +1069,6 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
         for j,cname in enumerate(cols):
             ws2.write(i,j, getattr(row,cname) if hasattr(row,cname) else row[j], cell)
 
-    # Sheet 4 — Remaining capacity
     ws3 = wb.add_worksheet("Remaining capacity")
     cols2 = ["doctor","assigned","cap","remaining"]
     for j,cname in enumerate(cols2): ws3.write(0,j,cname,hdr)
@@ -1066,14 +1076,12 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
         for j,cname in enumerate(cols2):
             ws3.write(i,j, getattr(row,cname) if hasattr(row,cname) else row[j], cell)
 
-    # Sheet 5 — ByShift (names)
     ws4 = wb.add_worksheet("ByShift")
     ws4.freeze_panes(1,1)
     ws4.set_column(0, 0, 14)
     for c in range(len(SHIFT_COLS_ORDER)): ws4.set_column(c+1, c+1, 24)
     ws4.write(0,0, L("day"), hdr)
-    for j, code in enumerate(SHIFT_COLS_ORDER, start=1):
-        ws4.write(0,j, f"{code}", hdr)
+    for j, code in enumerate(SHIFT_COLS_ORDER, start=1): ws4.write(0,j, f"{code}", hdr)
     def day_shift_map_export(df: pd.DataFrame, days:int):
         m = {d:{c:[] for c in SHIFT_COLS_ORDER} for d in range(1, days+1)}
         if df.empty: return m
@@ -1087,7 +1095,7 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
     for i, day in enumerate(sorted(dmap.keys()), start=1):
         wd = calendar.weekday(year, month, int(day))
         wd_name = I18N[st.session_state.lang]["weekday"][wd]
-        ws4.write(i,0, f"{int(day)}/{int(month)}\n{wd_name}", day_hdr)
+        ws4.write(i,0, f"{int(day)}/{int(month)}\n{wd_name}", hdr)
         ws4.set_row(i, 34)
         for j, code in enumerate(SHIFT_COLS_ORDER, start=1):
             names = dmap[day].get(code, [])
@@ -1095,26 +1103,23 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
             fmt = area_fmt.get(area, left_wrap)
             ws4.write(i,j, "\n".join(names), fmt)
 
-    # Sheet 6 — Daily Dashboard (per-code counts a/r)
     ws5 = wb.add_worksheet("Daily Dashboard")
     ws5.freeze_panes(1,1)
     ws5.set_column(0, 0, 16)
     for c in range(len(SHIFT_COLS_ORDER)): ws5.set_column(c+1, c+1, 12)
     ws5.write(0,0, L("day"), hdr)
-    for j, code in enumerate(SHIFT_COLS_ORDER, start=1):
-        ws5.write(0,j, code, hdr)
+    for j, code in enumerate(SHIFT_COLS_ORDER, start=1): ws5.write(0,j, code, hdr)
     dcnts = daily_counts(df_assign, st.session_state.days)
     for i, day in enumerate(range(1, st.session_state.days+1), start=1):
         wd = calendar.weekday(year, month, int(day))
         wd_name = I18N[st.session_state.lang]["weekday"][wd]
-        ws5.write(i,0, f"{int(day)}/{int(month)}\n{wd_name}", day_hdr)
+        ws5.write(i,0, f"{int(day)}/{int(month)}\n{wd_name}", hdr)
         ws5.set_row(i, 22)
         for j, code in enumerate(SHIFT_COLS_ORDER, start=1):
             a, r, short = dcnts[day][code]
             fmt = ok_fmt if short==0 else short_fmt
             ws5.write(i,j, f"{a}/{r}", fmt)
 
-    # Sheet 7 — Area Totals
     ws6 = wb.add_worksheet("Area Totals")
     ws6.freeze_panes(1,1)
     ws6.set_column(0, 0, 22)
@@ -1138,8 +1143,7 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
     return out.getvalue()
 
 def export_pdf(sheet: pd.DataFrame, year:int, month:int) -> bytes:
-    if not REPORTLAB_AVAILABLE:
-        return b""
+    if not REPORTLAB_AVAILABLE: return b""
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20)
     styles = getSampleStyleSheet()
@@ -1148,7 +1152,6 @@ def export_pdf(sheet: pd.DataFrame, year:int, month:int) -> bytes:
     story.append(Paragraph(title, styles["Title"]))
     story.append(Spacer(1, 6))
 
-    # Build table data: header row + data
     header = ["Day"] + list(sheet.columns)
     data = [header]
     for day in sheet.index:
@@ -1160,7 +1163,6 @@ def export_pdf(sheet: pd.DataFrame, year:int, month:int) -> bytes:
         data.append(row)
 
     tbl = Table(data, repeatRows=1)
-    # Table style
     base = [
         ('FONT', (0,0), (-1,0), 'Helvetica-Bold'),
         ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#EEF5FF")),
@@ -1168,12 +1170,10 @@ def export_pdf(sheet: pd.DataFrame, year:int, month:int) -> bytes:
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('GRID', (0,0), (-1,-1), 0.3, colors.HexColor("#CCCCCC")),
     ]
-    # Color cells by area color
     for i, day in enumerate(sheet.index, start=1):
         for j, docname in enumerate(sheet.columns, start=1):
             v = sheet.loc[day, docname]
-            if pd.isna(v) or str(v).strip()=="":
-                continue
+            if pd.isna(v) or str(v).strip()=="": continue
             code = str(v)
             area = LETTER_TO_AREA.get(code[0], None)
             bg = st.session_state.area_colors.get(area, "#FFFFFF")
@@ -1183,12 +1183,12 @@ def export_pdf(sheet: pd.DataFrame, year:int, month:int) -> bytes:
     doc.build(story)
     return buf.getvalue()
 
+# ---------- TABS: Export ----------
 with tab_export:
     if st.session_state.result_df.empty:
         st.info(L("need_generate"))
     else:
         sheet = sheet_day_doctor(st.session_state.result_df, st.session_state.days, st.session_state.doctors)
-        # Excel
         if XLSX_AVAILABLE:
             data_x = export_excel(sheet, st.session_state.gaps, st.session_state.remain,
                                   int(st.session_state.year), int(st.session_state.month), st.session_state.result_df)
@@ -1196,7 +1196,6 @@ with tab_export:
                                file_name="ED_rota.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                key="dl_xlsx", use_container_width=True)
-        # PDF
         pdf_bytes = export_pdf(sheet, int(st.session_state.year), int(st.session_state.month))
         if REPORTLAB_AVAILABLE and pdf_bytes:
             st.download_button(L("download_pdf"), data=pdf_bytes,
