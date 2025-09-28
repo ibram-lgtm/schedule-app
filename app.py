@@ -1,7 +1,7 @@
-# app.py — ED Rota Pro (Colored Code Cards)
+# app.py — ED Rota Pro (Colored Code Cells)
 # -----------------------------------------
 # الجديد هنا:
-# - استبدال "النقطة" بمربّع/بطاقة ملوّنة داخلها رمز الشفت (F1..C3) فقط.
+# - الخلية نفسها تصبح ملوّنة حسب المنطقة، وبداخلها رمز الشفت (F1..C3) فقط.
 # - Excel/PDF يطابقان العرض (الخلايا ملوّنة وبداخلها الرمز).
 # - الإبقاء على كل الميزات السابقة (التقويم، التحرير، الموازنة، القوالب اللونية، القيود…).
 
@@ -545,14 +545,17 @@ def inject_css():
       table.tbl thead th { position:sticky; top:0; background:var(--thead-bg); z-index:2; text-align:center; font-weight:700; }
       table.tbl tbody th.sticky { position:sticky; left:0; background:var(--card-bg); z-index:1; white-space:nowrap; font-weight:700; }
       .cell { display:flex; align-items:center; justify-content:center; min-height:40px; }
-      /* بطاقة الرمز الملوّنة */
+
+      /* بطاقة الرمز الملوّنة (مربعة وصغيرة) */
       .badge-code {
           display:inline-flex; align-items:center; justify-content:center;
-          min-width:36px; height:24px; padding:0 6px;
-          border-radius:8px; font-size:12px; font-weight:700;
-          border:1px solid rgba(0,0,0,.12); color:#111111;
-          box-shadow: inset 0 0 0 1px rgba(0,0,0,.06);
+          width:28px; height:28px;
+          border-radius:8px; font-size:12px; font-weight:800; letter-spacing:.2px;
+          border:1px solid var(--border); color:#111111; user-select:none;
+          box-shadow: inset 0 0 0 1px rgba(0,0,0,.04);
+          background: rgba(255,255,255,.5);
       }
+
       .ok    { background:#E7F7E9; color:#14532d; }
       .short { background:#FDEAEA; color:#7f1d1d; }
       .sub { font-size:11px; font-weight:500; opacity:.85; }
@@ -570,13 +573,17 @@ def chip_color_for_code(code: str):
             return area, st.session_state.area_colors.get(area, "#9CA3AF")
     return "", "#9CA3AF"
 
+def cell_bg_style(code: str) -> str:
+    """Inline CSS background for the whole TD based on code area color."""
+    _, color = chip_color_for_code(code)
+    return f"background:{color};"
+
 def badge_html(code: str):
     """Return colored badge containing the code itself."""
-    _, color = chip_color_for_code(code)
     txt = html.escape((code or "").upper())
-    return f"<span class='badge-code' style='background:{color}' title='{txt}'>{txt}</span>"
+    return f"<span class='badge-code' title='{txt}'>{txt}</span>"
 
-# ---------- Renderers (cards with code inside) ----------
+# ---------- Renderers (cells colored + code inside) ----------
 def render_day_doctor_cards(sheet: pd.DataFrame, year:int, month:int, doctors:List[str]):
     inject_css()
     head = ["<th>"+html.escape(L("day"))+"</th>"] + [f"<th>{html.escape(doc)}</th>" for doc in doctors]
@@ -592,7 +599,7 @@ def render_day_doctor_cards(sheet: pd.DataFrame, year:int, month:int, doctors:Li
                 cells.append(f"<td><div class='cell'></div></td>")
             else:
                 code = str(val).upper().strip()
-                cells.append(f"<td><div class='cell'>{badge_html(code)}</div></td>")
+                cells.append(f"<td style='{cell_bg_style(code)}'><div class='cell'>{badge_html(code)}</div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
     st.markdown(f"<div class='wrap'><table class='tbl'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
@@ -615,17 +622,17 @@ def render_doctor_day_cards(sheet: pd.DataFrame, year:int, month:int, doctors:Li
                 cells.append(f"<td><div class='cell'></div></td>")
             else:
                 code = str(val).upper().strip()
-                cells.append(f"<td><div class='cell'>{badge_html(code)}</div></td>")
+                cells.append(f"<td style='{cell_bg_style(code)}'><div class='cell'>{badge_html(code)}</div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
     st.markdown(f"<div class='wrap'><table class='tbl'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
 
 def render_day_shift_cards(day_map: Dict[int, Dict[str, List[str]]], year:int, month:int):
-    # هذا العرض يبقى كما هو (أسماء الأطباء داخل الخلية)، لأن الأعمدة هي رموز الشفت أصلًا
     inject_css()
     head = ["<th>"+html.escape(L("day"))+"</th>"]
     for code in SHIFT_COLS_ORDER:
-        head.append(f"<th>{html.escape(code)}</th>")
+        _, col = chip_color_for_code(code)
+        head.append(f"<th style='background:{col}'>{html.escape(code)}</th>")
     thead = "<thead><tr>" + "".join(head) + "</tr></thead>"
     body_rows = []
     for day in sorted(day_map.keys()):
@@ -637,14 +644,13 @@ def render_day_shift_cards(day_map: Dict[int, Dict[str, List[str]]], year:int, m
             if not docs:
                 cells.append(f"<td><div class='cell'></div></td>")
             else:
-                # أسماء مضغوطة
                 inner = " · ".join([html.escape(n) for n in docs])
-                cells.append(f"<td><div class='cell' style='font-size:12px'>{inner}</div></td>")
+                cells.append(f"<td style='{cell_bg_style(code)}'><div class='cell' style='font-size:12px'>{inner}</div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
     st.markdown(f"<div class='wrap'><table class='tbl'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
 
-def render_daily_area_table(area_totals: Dict[int, Dict[str, Tuple[int,int,int]]], year:int, month:int):
+def render_daily_area_table(atotals: Dict[int, Dict[str, Tuple[int,int,int]]], year:int, month:int):
     inject_css()
     st.subheader(L("daily_table"))
     head = ["<th>"+html.escape("Area" if st.session_state.lang=="en" else "القسم")+"</th>"]
@@ -658,7 +664,7 @@ def render_daily_area_table(area_totals: Dict[int, Dict[str, Tuple[int,int,int]]
         left = f"<th class='sticky'>{html.escape(AREA_LABEL[st.session_state.lang][area])}</th>"
         cells = []
         for d in days:
-            a, r, short = area_totals[d][area]
+            a, r, short = atotals[d][area]
             cls = "ok" if short==0 else "short"
             cells.append(f"<td><div class='cell'><span class='badge-code {cls}'>{a}/{r}</span></div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
@@ -711,7 +717,7 @@ def render_offday_calendar(doc: str):
                         k = f"off_{doc}_{y}_{m}_{d}"
                         if k in st.session_state: st.session_state[k] = False
             st.session_state.offdays[doc] = set()
-            st.experimental_rerun()
+            st.rerun()  # استبدال experimental_rerun
 
 # ---------- Inline editor ----------
 ALL_CODES = [""] + SHIFT_COLS_ORDER
@@ -790,10 +796,10 @@ tab_rules, tab_docs, tab_gen, tab_export = st.tabs([L("rules"), L("doctors_tab")
 # ---------- Rules tab ----------
 with tab_rules:
     st.subheader(L("coverage"))
-    cols = st.columns(3)
+    cols = st.columns(4)  # كان 3، الآن 4 أعمدة لأربع مناطق
     new_cov = st.session_state.cov.copy()
     for i, area in enumerate(AREAS):
-        with cols[i%3]:
+        with cols[i%4]:
             st.markdown(f"**{LBL_AREA(area)}**")
             for sh in SHIFTS:
                 key = f"cov_{area}_{sh}"
@@ -1197,8 +1203,7 @@ def export_pdf(sheet: pd.DataFrame, year:int, month:int) -> bytes:
     return buf.getvalue()
 
 # ---------- Export tab ----------
-tab_rules_placeholder = tab_export
-with tab_rules_placeholder:
+with tab_export:
     if st.session_state.result_df.empty:
         st.info(L("need_generate"))
     else:
