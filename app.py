@@ -1,10 +1,9 @@
-# app.py — ED Rota Pro (Color Chips + Tooltip + Excel/PDF match + Calendar Offdays + Fix slider)
-# ----------------------------------------------------------------------------------------------
-# الجديد في هذا الإصدار:
-# - مربعات لونية (chips) بدل النص داخل خلايا الجدول، بألوان المناطق، وحجم صغير + تلميح بالكود (F1..C3).
-# - Excel/PDF يطابق العرض: تلوين بدون نص، مع وضع الكود كـ comment في Excel.
-# - إصلاح SyntaxError في st.slider (إغلاق القوس).
-# - يحتفظ بكل ما سبق: القوالب اللونية، الموازن، القيود المتقدمة، التقويم لاختيار الإجازات، التحرير داخل الجدول.
+# app.py — ED Rota Pro (Colored Code Cards)
+# -----------------------------------------
+# الجديد هنا:
+# - استبدال "النقطة" بمربّع/بطاقة ملوّنة داخلها رمز الشفت (F1..C3) فقط.
+# - Excel/PDF يطابقان العرض (الخلايا ملوّنة وبداخلها الرمز).
+# - الإبقاء على كل الميزات السابقة (التقويم، التحرير، الموازنة، القوالب اللونية، القيود…).
 
 import streamlit as st
 import pandas as pd
@@ -518,7 +517,7 @@ def area_totals_from_daily_counts(dc: Dict[int, Dict[str, Tuple[int,int,int]]]) 
             out[d][area] = (A, R, short)
     return out
 
-# ---------- THEME-AWARE CSS + CHIP ----------
+# ---------- THEME-AWARE CSS + CODE BADGE ----------
 def inject_css():
     css = """
     <style>
@@ -546,9 +545,14 @@ def inject_css():
       table.tbl thead th { position:sticky; top:0; background:var(--thead-bg); z-index:2; text-align:center; font-weight:700; }
       table.tbl tbody th.sticky { position:sticky; left:0; background:var(--card-bg); z-index:1; white-space:nowrap; font-weight:700; }
       .cell { display:flex; align-items:center; justify-content:center; min-height:40px; }
-      .chip { display:inline-block; width:18px; height:18px; border-radius:6px; border:1px solid var(--border); }
-      .chip-lg { width:20px; height:20px; border-radius:6px; border:1px solid var(--border); }
-      .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; border:1px solid var(--border); color: var(--badge-text); }
+      /* بطاقة الرمز الملوّنة */
+      .badge-code {
+          display:inline-flex; align-items:center; justify-content:center;
+          min-width:36px; height:24px; padding:0 6px;
+          border-radius:8px; font-size:12px; font-weight:700;
+          border:1px solid rgba(0,0,0,.12); color:#111111;
+          box-shadow: inset 0 0 0 1px rgba(0,0,0,.06);
+      }
       .ok    { background:#E7F7E9; color:#14532d; }
       .short { background:#FDEAEA; color:#7f1d1d; }
       .sub { font-size:11px; font-weight:500; opacity:.85; }
@@ -556,12 +560,23 @@ def inject_css():
     """
     st.markdown(css, unsafe_allow_html=True)
 
-# ---------- Renderers (chips instead of text) ----------
-def chip_html(area:str, code:str, large=False):
-    size_cls = "chip-lg" if large else "chip"
-    color = area_color(area)
-    return f"<span class='{size_cls}' style='background:{color}' title='{html.escape(code)}'></span>"
+# ---------- Color from code ----------
+def chip_color_for_code(code: str):
+    code = (code or "").strip().upper()
+    if len(code) >= 2:
+        letter = code[0]
+        area = LETTER_TO_AREA.get(letter)
+        if area:
+            return area, st.session_state.area_colors.get(area, "#9CA3AF")
+    return "", "#9CA3AF"
 
+def badge_html(code: str):
+    """Return colored badge containing the code itself."""
+    _, color = chip_color_for_code(code)
+    txt = html.escape((code or "").upper())
+    return f"<span class='badge-code' style='background:{color}' title='{txt}'>{txt}</span>"
+
+# ---------- Renderers (cards with code inside) ----------
 def render_day_doctor_cards(sheet: pd.DataFrame, year:int, month:int, doctors:List[str]):
     inject_css()
     head = ["<th>"+html.escape(L("day"))+"</th>"] + [f"<th>{html.escape(doc)}</th>" for doc in doctors]
@@ -576,9 +591,8 @@ def render_day_doctor_cards(sheet: pd.DataFrame, year:int, month:int, doctors:Li
             if pd.isna(val) or str(val).strip()=="":
                 cells.append(f"<td><div class='cell'></div></td>")
             else:
-                code = str(val)
-                area = LETTER_TO_AREA.get(code[0], None)
-                cells.append(f"<td><div class='cell'>{chip_html(area, code, large=False)}</div></td>")
+                code = str(val).upper().strip()
+                cells.append(f"<td><div class='cell'>{badge_html(code)}</div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
     st.markdown(f"<div class='wrap'><table class='tbl'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
@@ -600,13 +614,14 @@ def render_doctor_day_cards(sheet: pd.DataFrame, year:int, month:int, doctors:Li
             if pd.isna(val) or str(val).strip()=="":
                 cells.append(f"<td><div class='cell'></div></td>")
             else:
-                code = str(val); area = LETTER_TO_AREA.get(code[0], None)
-                cells.append(f"<td><div class='cell'>{chip_html(area, code, large=False)}</div></td>")
+                code = str(val).upper().strip()
+                cells.append(f"<td><div class='cell'>{badge_html(code)}</div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
     st.markdown(f"<div class='wrap'><table class='tbl'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
 
 def render_day_shift_cards(day_map: Dict[int, Dict[str, List[str]]], year:int, month:int):
+    # هذا العرض يبقى كما هو (أسماء الأطباء داخل الخلية)، لأن الأعمدة هي رموز الشفت أصلًا
     inject_css()
     head = ["<th>"+html.escape(L("day"))+"</th>"]
     for code in SHIFT_COLS_ORDER:
@@ -622,10 +637,9 @@ def render_day_shift_cards(day_map: Dict[int, Dict[str, List[str]]], year:int, m
             if not docs:
                 cells.append(f"<td><div class='cell'></div></td>")
             else:
-                area = LETTER_TO_AREA.get(code[0], None)
-                # اسم الطبيب يبقى كنص صغير مع chip قبل الاسم
-                inner = "".join([f"<span style='display:inline-flex;align-items:center;gap:6px;margin:2px'>{chip_html(area, code, large=False)}<span style='font-size:12px'>{html.escape(n)}</span></span>" for n in docs])
-                cells.append(f"<td><div class='cell' style='flex-wrap:wrap; gap:6px; justify-content:flex-start'>{inner}</div></td>")
+                # أسماء مضغوطة
+                inner = " · ".join([html.escape(n) for n in docs])
+                cells.append(f"<td><div class='cell' style='font-size:12px'>{inner}</div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
     st.markdown(f"<div class='wrap'><table class='tbl'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
@@ -646,7 +660,7 @@ def render_daily_area_table(area_totals: Dict[int, Dict[str, Tuple[int,int,int]]
         for d in days:
             a, r, short = area_totals[d][area]
             cls = "ok" if short==0 else "short"
-            cells.append(f"<td><div class='cell'><span class='badge {cls}'>{a}/{r}</span></div></td>")
+            cells.append(f"<td><div class='cell'><span class='badge-code {cls}'>{a}/{r}</span></div></td>")
         body_rows.append("<tr>"+left+"".join(cells)+"</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
     st.markdown(f"<div class='wrap'><table class='tbl'>{thead}{tbody}</table></div>", unsafe_allow_html=True)
@@ -755,7 +769,7 @@ with st.sidebar:
 
     st.number_input(L("year"), 2024, 2100, key="year_input", value=st.session_state.year)
     st.number_input(L("month"), 1, 12, key="month_input", value=st.session_state.month)
-    st.slider(L("days"), 28, 31, value=st.session_state.days, key="days_slider")  # ← fixed: closed parentheses
+    st.slider(L("days"), 28, 31, value=st.session_state.days, key="days_slider")
     _ = st.text_input(L("seed"), value=st.session_state.get("seed_input_txt",""), key="seed_input_txt")
 
     st.session_state.year = st.session_state.year_input
@@ -1010,7 +1024,7 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
         "resus": wb.add_format({"align":"center","valign":"vcenter","border":1,"bg_color": st.session_state.area_colors["resus"]}),
     }
 
-    # Rota (Day×Doctor): cells colored, no text; add comment with code
+    # Rota (Day×Doctor): colored cells with code text
     ws = wb.add_worksheet("Rota")
     ws.freeze_panes(1,1)
     ws.set_column(0, 0, 14)
@@ -1027,15 +1041,12 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
             if pd.isna(v) or str(v).strip()=="":
                 ws.write(i,j,"",blank)
             else:
-                code = str(v)
+                code = str(v).upper().strip()
                 area = LETTER_TO_AREA.get(code[0], None)
                 fmt = area_fmt.get(area, cell)
-                ws.write(i,j, "", fmt)
-                try:
-                    ws.write_comment(i, j, code)  # tooltip with code
-                except: pass
+                ws.write(i,j, code, fmt)
 
-    # Doctor×Day (colored)
+    # Doctor×Day
     wsD = wb.add_worksheet("Doctor×Day")
     wsD.freeze_panes(1,1)
     wsD.set_column(0, 0, 24)
@@ -1053,13 +1064,10 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
             if pd.isna(v) or str(v).strip()=="":
                 wsD.write(i,j,"", blank)
             else:
-                code = str(v)
+                code = str(v).upper().strip()
                 area = LETTER_TO_AREA.get(code[0], None)
                 fmt = area_fmt.get(area, cell)
-                wsD.write(i,j, "", fmt)
-                try:
-                    wsD.write_comment(i, j, code)
-                except: pass
+                wsD.write(i,j, code, fmt)
 
     # Coverage gaps
     ws2 = wb.add_worksheet("Coverage gaps")
@@ -1077,7 +1085,7 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
         for j,cname in enumerate(cols2):
             ws3.write(i,j, getattr(row,cname) if hasattr(row,cname) else row[j], cell)
 
-    # ByShift (names listed; keep text)
+    # ByShift (names)
     ws4 = wb.add_worksheet("ByShift")
     ws4.freeze_panes(1,1)
     ws4.set_column(0, 0, 14)
@@ -1105,7 +1113,7 @@ def export_excel(sheet: pd.DataFrame, gaps: pd.DataFrame, remain: pd.DataFrame,
             fmt = area_fmt.get(area, left_wrap)
             ws4.write(i,j, "\n".join(names), fmt)
 
-    # Daily Dashboard (a/r)
+    # Daily Dashboard
     ws5 = wb.add_worksheet("Daily Dashboard")
     ws5.freeze_panes(1,1)
     ws5.set_column(0, 0, 16)
@@ -1164,7 +1172,7 @@ def export_pdf(sheet: pd.DataFrame, year:int, month:int) -> bytes:
         row = [f"{int(day)}/{int(month)}\n{wd}"]
         for docname in sheet.columns:
             v = sheet.loc[day, docname]
-            row.append("" if (pd.isna(v) or str(v).strip()=="") else "")  # لا نص داخل الخلية
+            row.append("" if (pd.isna(v) or str(v).strip()=="") else str(v).upper().strip())
         data.append(row)
 
     tbl = Table(data, repeatRows=1)
@@ -1179,7 +1187,7 @@ def export_pdf(sheet: pd.DataFrame, year:int, month:int) -> bytes:
         for j, docname in enumerate(sheet.columns, start=1):
             v = sheet.loc[day, docname]
             if pd.isna(v) or str(v).strip()=="": continue
-            code = str(v)
+            code = str(v).upper().strip()
             area = LETTER_TO_AREA.get(code[0], None)
             bg = st.session_state.area_colors.get(area, "#FFFFFF")
             base.append(('BACKGROUND', (j,i), (j,i), colors.HexColor(bg)))
@@ -1189,8 +1197,8 @@ def export_pdf(sheet: pd.DataFrame, year:int, month:int) -> bytes:
     return buf.getvalue()
 
 # ---------- Export tab ----------
-tab_export_placeholder = tab_export
-with tab_export_placeholder:
+tab_rules_placeholder = tab_export
+with tab_rules_placeholder:
     if st.session_state.result_df.empty:
         st.info(L("need_generate"))
     else:
